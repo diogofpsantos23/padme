@@ -1,0 +1,16 @@
+{
+  "path": "data/unsw_nb15.csv",
+  "mode": "padme",
+  "nodes": 5,
+  "pssViewSize": 4,
+  "pssShuffleLength": 4,
+  "pssCycleEveryItems": 50,
+  "replFanout": 2,
+  "replBatchSize": 32,
+  "replCycleEveryItems": 50,
+  "maxStoredItems": 1000,
+  "maxRepresentatives": 256,
+  "refreshUtilitySpan": 16,
+  "reportEvery": 1000,
+  "ignoreColumns": ["label", "attack_cat", "proto", "service", "state"]
+}
