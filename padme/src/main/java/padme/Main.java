@@ -35,20 +35,6 @@ public final class Main {
     }
 
     Config cfg = ConfigLoader.loadFromFile(Path.of(cfgArg));
-
-    int n = (cfg.nodes == null) ? 1 : cfg.nodes;
-    if (n > 1) {
-      Orchestrator.run(prepend("orchestrator", args));
-      return;
-    }
-
     Runner.run(cfg);
-  }
-
-  private static String[] prepend(String first, String[] rest) {
-    String[] out = new String[(rest == null ? 0 : rest.length) + 1];
-    out[0] = first;
-    if (rest != null && rest.length > 0) System.arraycopy(rest, 0, out, 1, rest.length);
-    return out;
   }
 }

@@ -37,3 +37,4 @@ build/
 
 .env
 .venv
+*.csv

@@ -18,6 +18,7 @@ import padme.node.Node;
 import padme.pss.PssOverlay;
 import padme.retention.BaselineFullRetentionPolicy;
 import padme.retention.PadmeRetentionPolicy;
+import padme.retention.RandomRetentionPolicy;
 import padme.retention.RepresentativeSet;
 import padme.retention.RetentionDecision;
 import padme.retention.RetentionPolicy;
@@ -34,7 +35,7 @@ public final class Runner {
 
   public static void runSingleNode(Config cfg) {
     Metrics m = new Metrics();
-    RetentionPolicy policy = createPolicy(cfg, m);
+    RetentionPolicy policy = createPolicy(cfg, m, 0);
 
     Node node0 = createNode(0, policy);
 
@@ -63,7 +64,7 @@ public final class Runner {
 
     for (int i = 0; i < n; i++) {
       ms[i] = new Metrics();
-      nodes[i] = createNode(i, createPolicy(cfg, ms[i]));
+      nodes[i] = createNode(i, createPolicy(cfg, ms[i], i));
     }
 
     long seed = 1337L;
@@ -99,14 +100,23 @@ public final class Runner {
       m.seen++;
       m.record(d);
 
-      PadmeStats ps = PadmeStats.from(policy);
+      double uMinStore = 0.0;
+      int repsSize = 0;
+      double repsMinU = 0.0;
+      double repsMeanU = 0.0;
+
+      if (policy instanceof PadmeRetentionPolicy p) {
+        uMinStore = p.minUtilityStored();
+        repsSize = p.representativeCount();
+        repsMinU = p.repsMinUtility();
+        repsMeanU = p.repsMeanUtility();
+      }
 
       long elapsedNs = System.nanoTime() - startNs;
-      m.maybePrint(cfg.reportEvery, node.storedCount(), node.storedBytes(), node.totalUtility(), elapsedNs, ps.uMinStore, ps.repsSize, ps.repsMinU, ps.repsMeanU);
+      m.maybePrint(cfg.reportEvery, node.storedCount(), node.storedBytes(), node.totalUtility(), elapsedNs, uMinStore, repsSize, repsMinU, repsMeanU);
 
       rowIdx++;
     }
-
   }
 
   private static long ingestLoopMulti(Config cfg, CsvRowReader rdr, VectorMapper mapper, Node[] nodes, Metrics[] ms, PssOverlay overlay, long startNs) throws IOException {
@@ -145,7 +155,7 @@ public final class Runner {
 
     long lastReportNs = System.nanoTime();
 
-    while (true) {
+    while (totalReplQueueSize(nodes) > 0) {
       overlay.cycleAll();
       replicationStep(nodes, overlay, cfg, ms);
 
@@ -158,12 +168,21 @@ public final class Runner {
       }
 
       try {
-        Thread.sleep(10);
+        Thread.sleep(1);
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
         break;
       }
     }
+
+    long elapsedNs = System.nanoTime() - startNs;
+    printMultiProgress(cfg, nodes, ms, elapsedNs, rowsRead);
+  }
+
+  private static int totalReplQueueSize(Node[] nodes) {
+    int total = 0;
+    for (Node n : nodes) total += n.replicationQueueSize();
+    return total;
   }
 
   private static long resolveReportEveryMs(Config cfg) {
@@ -185,9 +204,14 @@ public final class Runner {
     return new Node(id, policy, kv);
   }
 
-  private static RetentionPolicy createPolicy(Config cfg, Metrics m) {
+  private static RetentionPolicy createPolicy(Config cfg, Metrics m, int nodeId) {
     if (cfg.mode.equalsIgnoreCase("baseline")) {
       return new BaselineFullRetentionPolicy();
+    }
+    if (cfg.mode.equalsIgnoreCase("random")) {
+      long base = (cfg.distSeed == null ? 1337L : cfg.distSeed);
+      long seed = base ^ (((long) nodeId + 1L) * 0x9E3779B97F4A7C15L);
+      return new RandomRetentionPolicy(cfg.maxStoredItems, seed);
     }
     RepresentativeSet reps = new RepresentativeSet(cfg.maxRepresentatives, new L2Distance());
     int refreshEveryItems = cfg.refreshUtilitySpan;
@@ -195,7 +219,16 @@ public final class Runner {
   }
 
   private static Path resolveOutPath(Config cfg) {
-    return cfg.mode.equalsIgnoreCase("baseline") ? Path.of("src/main/resources/data/baseline_latest.csv") : Path.of("src/main/resources/data/padme_latest.csv");
+    if (cfg.mode.equalsIgnoreCase("baseline"))
+      return Path.of("src/main/resources/data/output/baseline/baseline_merged.csv");
+    if (cfg.mode.equalsIgnoreCase("random"))
+      return Path.of("src/main/resources/data/output/random/random_merged.csv");
+    return Path.of("src/main/resources/data/output/padme/padme_merged.csv");
+  }
+
+  private static Path resolveOutDir(Config cfg) {
+    String mode = (cfg.mode == null || cfg.mode.isBlank()) ? "padme" : cfg.mode.trim().toLowerCase();
+    return Path.of("src/main/resources/data/output").resolve(mode);
   }
 
   private static RetentionDecision ingestOne(Node node, VectorMapper mapper, Config cfg, long key, String[] row) {
@@ -219,32 +252,6 @@ public final class Runner {
     }
   }
 
-  private static final class PadmeStats {
-    final double uMinStore;
-    final int repsSize;
-    final double repsMinU;
-    final double repsMeanU;
-
-    private PadmeStats(double uMinStore, int repsSize, double repsMinU, double repsMeanU) {
-      this.uMinStore = uMinStore;
-      this.repsSize = repsSize;
-      this.repsMinU = repsMinU;
-      this.repsMeanU = repsMeanU;
-    }
-
-    static PadmeStats from(RetentionPolicy policy) {
-      if (policy instanceof PadmeRetentionPolicy p) {
-        return new PadmeStats(
-                p.minUtilityStored(),
-                p.representativeCount(),
-                p.repsMinUtility(),
-                p.repsMeanUtility()
-        );
-      }
-      return new PadmeStats(0.0, 0, 0.0, 0.0);
-    }
-  }
-
   private static void printFinal(Config cfg, Node node0, Metrics m) {
     System.out.println("DONE: " + cfg);
     System.out.printf(
@@ -258,9 +265,20 @@ public final class Runner {
       try {
         printFinalMulti(cfg, nodes, ms);
         printFinalPerNode(cfg, nodes, ms);
+
+        Path outDir = resolveOutDir(cfg);
+
+        String prefix = (cfg.mode == null || cfg.mode.isBlank()) ? "padme" : cfg.mode.trim().toLowerCase();
+        for (int i = 0; i < nodes.length; i++) {
+          Path outNode = outDir.resolve(prefix + "_node" + i + ".csv");
+          RetainedDatasetWriter.writeSnapshotCsv(outNode, header, nodes[i].snapshotRecords());
+          System.out.println("Wrote retained dataset: " + outNode.toAbsolutePath());
+        }
+
         List<Record> aggregated = aggregateSnapshotsKeepDuplicates(nodes);
         RetainedDatasetWriter.writeSnapshotCsv(out, header, aggregated);
         System.out.println("Wrote retained dataset: " + out.toAbsolutePath());
+
       } catch (Exception ignored) {
       }
     }, "padme-shutdown-hook"));
@@ -275,10 +293,6 @@ public final class Runner {
     }
   }
 
-  private static String[] headerFromNodeCsv(Config cfg) {
-    throw new UnsupportedOperationException("Pass the CSV header you already read, do not call this.");
-  }
-
   private static void printMultiProgress(Config cfg, Node[] nodes, Metrics[] ms, long elapsedNs, long rowsRead) {
     int storedTotal = 0;
     long bytesTotal = 0L;
@@ -291,8 +305,8 @@ public final class Runner {
     }
 
     System.out.printf(
-            "Progress: rows=%d storedTotal=%d bytesTotal=%d utilityTotal=%.1f elapsed=%.2fs nodes=%d mode=%s%n%n",
-            rowsRead, storedTotal, bytesTotal, utilityTotal, elapsedNs / 1e9, nodes.length, cfg.mode
+            "Progress: rows=%d storedTotal=%d bytesTotal=%d utilityTotal=%.1f replQ=%d elapsed=%.2fs nodes=%d mode=%s%n%n",
+            rowsRead, storedTotal, bytesTotal, utilityTotal, totalReplQueueSize(nodes), elapsedNs / 1e9, nodes.length, cfg.mode
     );
 
     printPerNodeProgress(nodes, ms, elapsedNs);
@@ -329,8 +343,8 @@ public final class Runner {
       Node nd = nodes[i];
       Metrics m = ms[i];
       System.out.printf(
-              "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f mode=%s%n",
-              i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), cfg.mode
+              "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f replQ=%d mode=%s%n",
+              i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), nd.replicationQueueSize(), cfg.mode
       );
     }
   }
@@ -374,8 +388,8 @@ public final class Runner {
       Node nd = nodes[i];
       Metrics m = ms[i];
       System.out.printf(
-              "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f elapsed=%.2fs%n",
-              i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), elapsedNs / 1e9
+              "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f replQ=%d elapsed=%.2fs%n",
+              i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), nd.replicationQueueSize(), elapsedNs / 1e9
       );
     }
   }

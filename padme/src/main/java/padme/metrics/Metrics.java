@@ -104,15 +104,7 @@ public final class Metrics {
     winRepReplaced = 0;
   }
 
-  public void maybePrint(int every,
-                         int storedCount,
-                         long storedBytes,
-                         double utilitySum,
-                         long elapsedNs,
-                         double uMinStore,
-                         int repsSize,
-                         double repsMinU,
-                         double repsMeanU) {
+  public void maybePrint(int every, int storedCount, long storedBytes, double utilitySum, long elapsedNs, double uMinStore, int repsSize, double repsMinU, double repsMeanU) {
     if (every <= 0) return;
     if (seen == 0) return;
     if (seen % every != 0) return;

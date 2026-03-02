@@ -1,16 +1,31 @@
 import pandas as pd
 import hashlib
+from pathlib import Path
 
-RAW_PATH = "unsw_nb15.parquet"
-OUT_TRAIN = "unsw_nb15.csv"
-OUT_TEST = "unsw_nb15_test.csv"
+BASE_DIR = Path(__file__).resolve().parents[1]
+RAW_DIR = BASE_DIR / "raw"
+IN_DIR = BASE_DIR / "input"
+OUT_DIR = BASE_DIR / "output"
+
+RAW_PATH = RAW_DIR / "creditcard.csv"
+OUT_TRAIN = IN_DIR / "creditcard_train.csv"
+OUT_TEST = OUT_DIR / "creditcard_test.csv"
 
 TRAIN_SIZE = 20000
 TEST_SIZE = 5000
 RANDOM_STATE = 42
-TARGET_COL = "label"
+TARGET_COL = "Class"
 
-TRAIN_POS_RATIO = 0.2
+TRAIN_POS_RATIO = 0.024
+
+def load_df(path: Path) -> pd.DataFrame:
+    p = Path(path)
+    ext = p.suffix.lower()
+    if ext == ".csv":
+        return pd.read_csv(p)
+    if ext == ".parquet":
+        return pd.read_parquet(p)
+    raise ValueError(f"Unsupported input format: {ext} (expected .csv or .parquet)")
 
 def row_hash_series(df, cols):
     s = df[cols].astype("string").fillna("").agg("|".join, axis=1)
@@ -25,7 +40,10 @@ def print_balance(name, df):
     print("Counts:", counts.to_dict())
     print("Ratio :", {k: round(v, 6) for k, v in ratios.to_dict().items()})
 
-df = pd.read_parquet(RAW_PATH)
+IN_DIR.mkdir(parents=True, exist_ok=True)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+df = load_df(RAW_PATH)
 
 print("RAW rows:", len(df))
 print("RAW cols:", df.shape[1])
@@ -34,7 +52,6 @@ print_balance("RAW", df)
 cols = df.columns.tolist()
 
 raw_counts = df[TARGET_COL].value_counts().to_dict()
-raw_ratio_0 = raw_counts.get(0, 0) / len(df)
 raw_ratio_1 = raw_counts.get(1, 0) / len(df)
 
 df_1 = df[df[TARGET_COL] == 1]

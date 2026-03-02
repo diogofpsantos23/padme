@@ -37,8 +37,8 @@ public final class Config {
     if (path == null || path.isBlank())
       throw new IllegalArgumentException("config.path is required and must be non-empty");
 
-    if (mode == null || (!mode.equalsIgnoreCase("padme") && !mode.equalsIgnoreCase("baseline")))
-      throw new IllegalArgumentException("config.mode must be 'padme' or 'baseline'");
+    if (mode == null || (!mode.equalsIgnoreCase("padme") && !mode.equalsIgnoreCase("baseline") && !mode.equalsIgnoreCase("random")))
+      throw new IllegalArgumentException("config.mode must be 'padme', 'baseline' or 'random'");
 
     if (nodes == null || nodes <= 0)
       throw new IllegalArgumentException("config.nodes must be > 0");
@@ -73,10 +73,12 @@ public final class Config {
             .distinct()
             .toArray(String[]::new);
 
-    if (mode.equalsIgnoreCase("padme")) {
+    if (mode.equalsIgnoreCase("padme") || mode.equalsIgnoreCase("random")) {
       if (maxStoredItems == null || maxStoredItems <= 0)
-        throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=padme");
+        throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=padme or mode=random");
+    }
 
+    if (mode.equalsIgnoreCase("padme")) {
       if (maxRepresentatives == null || maxRepresentatives <= 0)
         throw new IllegalArgumentException("config.maxRepresentatives must be > 0 when mode=padme");
 

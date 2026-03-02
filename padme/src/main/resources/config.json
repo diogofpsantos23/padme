@@ -1,6 +1,6 @@
 {
-  "path": "data/unsw_nb15.csv",
-  "mode": "padme",
+  "path": "data/input/unsw_nb15_train.csv",
+  "mode": "random",
   "nodes": 5,
   "pssViewSize": 4,
   "pssShuffleLength": 4,
