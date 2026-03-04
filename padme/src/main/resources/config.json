@@ -8,7 +8,7 @@
   "replFanout": 2,
   "replBatchSize": 32,
   "replCycleEveryItems": 50,
-  "maxStoredItems": 1000,
+  "dataKeepRatios": [0.02, 0.04, 0.06, 0.08, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
   "maxRepresentatives": 256,
   "refreshUtilitySpan": 16,
   "reportEvery": 1000,

@@ -18,6 +18,10 @@ public final class Config {
   public Integer replBatchSize;
   public Integer replCycleEveryItems;
 
+  public double[] dataKeepRatios;
+
+  public Double keepRatio;
+
   public Integer maxStoredItems;
   public Integer maxRepresentatives;
   public Integer refreshUtilitySpan;
@@ -42,6 +46,8 @@ public final class Config {
 
     if (nodes == null || nodes <= 0)
       throw new IllegalArgumentException("config.nodes must be > 0");
+
+    if (separator == null || separator.isBlank()) separator = ",";
 
     if (pssViewSize == null) pssViewSize = Math.max(1, Math.min(8, nodes - 1));
     if (pssShuffleLength == null) pssShuffleLength = Math.max(1, Math.min(pssViewSize, 4));
@@ -73,9 +79,16 @@ public final class Config {
             .distinct()
             .toArray(String[]::new);
 
-    if (mode.equalsIgnoreCase("padme") || mode.equalsIgnoreCase("random")) {
-      if (maxStoredItems == null || maxStoredItems <= 0)
-        throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=padme or mode=random");
+    if (dataKeepRatios != null && dataKeepRatios.length > 0) {
+      for (double r : dataKeepRatios) {
+        if (Double.isNaN(r) || Double.isInfinite(r) || r <= 0.0 || r > 1.0)
+          throw new IllegalArgumentException("config.dataKeepRatios must contain values in (0,1]");
+      }
+    } else {
+      if (mode.equalsIgnoreCase("padme") || mode.equalsIgnoreCase("random")) {
+        if (maxStoredItems == null || maxStoredItems <= 0)
+          throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=padme or mode=random and dataKeepRatios is not set");
+      }
     }
 
     if (mode.equalsIgnoreCase("padme")) {
@@ -102,15 +115,10 @@ public final class Config {
             ", replFanout=" + replFanout +
             ", replBatchSize=" + replBatchSize +
             ", replCycleEveryItems=" + replCycleEveryItems +
+            ", keepRatio=" + keepRatio +
             ", maxStoredItems=" + maxStoredItems +
             ", maxRepresentatives=" + maxRepresentatives +
             ", reportEvery=" + reportEvery +
-            ", distBasePort=" + distBasePort +
-            ", distCollectorPort=" + distCollectorPort +
-            ", distSeed=" + distSeed +
-            ", distGraceMs=" + distGraceMs +
-            ", distMaxRounds=" + distMaxRounds +
-            ", distTmpDir='" + distTmpDir + '\'' +
             ", ignoreColumns=" + Arrays.toString(ignoreColumns) +
             '}';
   }

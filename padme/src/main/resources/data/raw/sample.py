@@ -7,16 +7,16 @@ RAW_DIR = BASE_DIR / "raw"
 IN_DIR = BASE_DIR / "input"
 OUT_DIR = BASE_DIR / "output"
 
-RAW_PATH = RAW_DIR / "creditcard.csv"
-OUT_TRAIN = IN_DIR / "creditcard_train.csv"
-OUT_TEST = OUT_DIR / "creditcard_test.csv"
+RAW_PATH = RAW_DIR / "unsw_nb15.parquet"
+OUT_TRAIN = IN_DIR / "unsw_nb15_train.csv"
+OUT_TEST = OUT_DIR / "unsw_nb15_test.csv"
 
-TRAIN_SIZE = 20000
-TEST_SIZE = 5000
+TRAIN_SIZE = 50000
+TEST_SIZE = 2000
 RANDOM_STATE = 42
-TARGET_COL = "Class"
+TARGET_COL = "label"
 
-TRAIN_POS_RATIO = 0.024
+TRAIN_POS_RATIO = 0.2
 
 def load_df(path: Path) -> pd.DataFrame:
     p = Path(path)
