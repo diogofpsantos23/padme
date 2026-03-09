@@ -95,6 +95,9 @@ public final class Config {
       if (maxRepresentatives == null || maxRepresentatives <= 0)
         throw new IllegalArgumentException("config.maxRepresentatives must be > 0 when mode=padme");
 
+      if (maxStoredItems != null && maxRepresentatives >= maxStoredItems)
+        throw new IllegalArgumentException("config.maxRepresentatives must be < config.maxStoredItems when mode=padme");
+
       if (refreshUtilitySpan == null || refreshUtilitySpan <= 0)
         throw new IllegalArgumentException("config.refreshUtilitySpan must be > 0 when mode=padme");
     }

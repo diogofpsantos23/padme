@@ -42,11 +42,26 @@ public final class Runner {
 
     private static void runSweep(Config base) {
         long totalRows = countInputRows(base.path, base.separator);
+
         for (double r : base.dataKeepRatios) {
             int ratioInt = toRatioInt(r);
+
             Config cfg = cloneConfig(base);
             cfg.keepRatio = r;
             cfg.maxStoredItems = computePerNodeBudget(totalRows, cfg.nodes, r);
+
+            if (cfg.mode.equalsIgnoreCase("padme")) {
+                if (cfg.maxStoredItems <= 1) {
+                    cfg.maxRepresentatives = 1;
+                } else if (cfg.maxRepresentatives == null || cfg.maxRepresentatives <= 0) {
+                    cfg.maxRepresentatives = Math.max(1, cfg.maxStoredItems / 4);
+                } else if (cfg.maxRepresentatives >= cfg.maxStoredItems) {
+                    cfg.maxRepresentatives = Math.max(1, cfg.maxStoredItems - 1);
+                }
+            }
+
+            cfg.validate();
+
             Path outDir = resolveOutDir(cfg.mode, ratioInt);
             runMultiNodeOnce(cfg, outDir, ratioInt);
         }
@@ -288,13 +303,30 @@ public final class Runner {
         if (cfg.mode.equalsIgnoreCase("baseline")) {
             return new BaselineFullRetentionPolicy();
         }
+
         if (cfg.mode.equalsIgnoreCase("random")) {
             long seed = 1337L ^ (((long) nodeId + 1L) * 0x9E3779B97F4A7C15L);
             return new RandomRetentionPolicy(cfg.maxStoredItems, seed);
         }
-        RepresentativeSet reps = new RepresentativeSet(cfg.maxRepresentatives, new L2Distance());
+
+        int maxStored = cfg.maxStoredItems;
+        int maxReps = cfg.maxRepresentatives;
+
+        if (maxStored <= 0) {
+            throw new IllegalArgumentException("maxStoredItems must be > 0 for padme");
+        }
+
+        if (maxReps <= 0) {
+            throw new IllegalArgumentException("maxRepresentatives must be > 0 for padme");
+        }
+
+        if (maxReps >= maxStored) {
+            maxReps = Math.max(1, maxStored - 1);
+        }
+
+        RepresentativeSet reps = new RepresentativeSet(maxReps, new L2Distance());
         int refreshEveryItems = cfg.refreshUtilitySpan;
-        return new PadmeRetentionPolicy(cfg.maxStoredItems, reps, refreshEveryItems, m);
+        return new PadmeRetentionPolicy(maxStored, reps, refreshEveryItems, m);
     }
 
     private static RetentionDecision ingestOne(Node node, VectorMapper mapper, Config cfg, long key, String[] row) {
