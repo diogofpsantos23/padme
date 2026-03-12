@@ -31,13 +31,17 @@ public final class Runner {
     private Runner() {}
 
     public static void run(Config cfg) {
-        if (cfg.dataKeepRatios != null && cfg.dataKeepRatios.length > 0 && (cfg.mode.equalsIgnoreCase("padme") || cfg.mode.equalsIgnoreCase("random"))) {
+        if (cfg.dataKeepRatios != null && !cfg.dataKeepRatios.isEmpty() && (cfg.mode.equalsIgnoreCase("padme") || cfg.mode.equalsIgnoreCase("random"))) {
             runSweep(cfg);
             return;
         }
 
-        if (cfg.nodes != null && cfg.nodes > 1) runMultiNodeOnce(cfg, resolveOutDir(cfg.mode, null), null);
-        else runSingleNodeOnce(cfg, resolveOutDir(cfg.mode, null), null);
+        if (cfg.mode.equalsIgnoreCase("padme")) {
+            assignDerivedPadmeParams(cfg);
+        }
+
+        if (cfg.nodes > 1) runMultiNodeOnce(cfg, resolveOutDir(cfg, cfg.mode, null), null);
+        else runSingleNodeOnce(cfg, resolveOutDir(cfg, cfg.mode, null));
     }
 
     private static void runSweep(Config base) {
@@ -51,18 +55,12 @@ public final class Runner {
             cfg.maxStoredItems = computePerNodeBudget(totalRows, cfg.nodes, r);
 
             if (cfg.mode.equalsIgnoreCase("padme")) {
-                if (cfg.maxStoredItems <= 1) {
-                    cfg.maxRepresentatives = 1;
-                } else if (cfg.maxRepresentatives == null || cfg.maxRepresentatives <= 0) {
-                    cfg.maxRepresentatives = Math.max(1, cfg.maxStoredItems / 4);
-                } else if (cfg.maxRepresentatives >= cfg.maxStoredItems) {
-                    cfg.maxRepresentatives = Math.max(1, cfg.maxStoredItems - 1);
-                }
+                assignDerivedPadmeParams(cfg);
             }
 
             cfg.validate();
 
-            Path outDir = resolveOutDir(cfg.mode, ratioInt);
+            Path outDir = resolveOutDir(cfg, cfg.mode, ratioInt);
             runMultiNodeOnce(cfg, outDir, ratioInt);
         }
     }
@@ -78,7 +76,7 @@ public final class Runner {
         return rows;
     }
 
-    private static void runSingleNodeOnce(Config cfg, Path outDir, Integer ratioInt) {
+    private static void runSingleNodeOnce(Config cfg, Path outDir) {
         Metrics m = new Metrics();
         RetentionPolicy policy = createPolicy(cfg, m, 0);
 
@@ -89,7 +87,9 @@ public final class Runner {
         String[] header;
         try (CsvRowReader rdr = new CsvRowReader(cfg.path, cfg.separator, true)) {
             header = rdr.header();
-            VectorMapper mapper = NumericVectorMapper.fromHeader(header, cfg.idColumn, cfg.ignoreColumns);
+
+            List<String[]> fitRows = loadRowsForVectorFit(cfg, 20000);
+            VectorMapper mapper = NumericVectorMapper.fit(header, cfg.idColumn, cfg.ignoreColumns, fitRows, cfg.vectorTransform);
 
             ingestLoopSingle(cfg, rdr, mapper, node0, m, policy, startNs);
         } catch (Exception e) {
@@ -125,7 +125,9 @@ public final class Runner {
         long rowsRead;
         try (CsvRowReader rdr = new CsvRowReader(cfg.path, cfg.separator, true)) {
             header = rdr.header();
-            VectorMapper mapper = NumericVectorMapper.fromHeader(header, cfg.idColumn, cfg.ignoreColumns);
+
+            List<String[]> fitRows = loadRowsForVectorFit(cfg, 20000);
+            VectorMapper mapper = NumericVectorMapper.fit(header, cfg.idColumn, cfg.ignoreColumns, fitRows, cfg.vectorTransform);
 
             rowsRead = ingestLoopMulti(cfg, rdr, mapper, nodes, ms, overlay, startNs);
 
@@ -148,6 +150,20 @@ public final class Runner {
         writeOutputsMulti(cfg, outDir, header, nodes);
 
         if (ratioInt != null) System.out.println("Wrote outputs: " + outDir.toAbsolutePath());
+    }
+
+    private static List<String[]> loadRowsForVectorFit(Config cfg, int maxRows) throws IOException {
+        List<String[]> rows = new ArrayList<>();
+
+        try (CsvRowReader rdr = new CsvRowReader(cfg.path, cfg.separator, true)) {
+            rdr.header();
+            String[] row;
+            while ((row = rdr.nextRow()) != null && rows.size() < maxRows) {
+                rows.add(row.clone());
+            }
+        }
+
+        return rows;
     }
 
     private static void ingestLoopSingle(Config cfg, CsvRowReader rdr, VectorMapper mapper, Node node, Metrics m, RetentionPolicy policy, long startNs) throws IOException {
@@ -281,7 +297,7 @@ public final class Runner {
     }
 
     private static long resolveReportEveryMs(Config cfg) {
-        if (cfg.reportEvery != null && cfg.reportEvery > 0) {
+        if (cfg.reportEvery > 0) {
             long ms = cfg.reportEvery;
             if (ms < 250) ms = 250;
             if (ms > 5000) ms = 5000;
@@ -470,7 +486,7 @@ public final class Runner {
 
         List<Record> out = new ArrayList<>(Math.max(16, total));
         for (Node nd : nodes) {
-            for (Record r : nd.snapshotRecords()) out.add(r);
+            out.addAll(nd.snapshotRecords());
         }
         return out;
     }
@@ -491,17 +507,61 @@ public final class Runner {
     }
 
     private static int computePerNodeBudget(long totalRows, int nodes, double ratio) {
-        int local = (int) Math.ceil(totalRows / (double) nodes);
-        int budget = (int) Math.ceil(local * ratio);
+        int budget = (int) Math.ceil(totalRows * ratio);
         if (budget <= 0) budget = 1;
         return budget;
     }
 
-    private static Path resolveOutDir(String mode, Integer ratioInt) {
+    private static int deriveMaxRepresentatives(int maxStoredItems) {
+        if (maxStoredItems <= 1) return 1;
+
+        int derived = Math.max(8, (int) Math.round(0.08 * maxStoredItems));
+        int cap = Math.max(1, maxStoredItems / 3);
+
+        return Math.min(derived, cap);
+    }
+
+    private static int deriveRefreshUtilitySpan(int maxRepresentatives) {
+        return Math.max(5, (int) Math.round(0.15 * maxRepresentatives));
+    }
+
+    private static void assignDerivedPadmeParams(Config cfg) {
+        if (!cfg.mode.equalsIgnoreCase("padme")) return;
+
+        if (cfg.maxStoredItems == null || cfg.maxStoredItems <= 0) {
+            throw new IllegalArgumentException("maxStoredItems must be > 0 for padme");
+        }
+
+        cfg.maxRepresentatives = deriveMaxRepresentatives(cfg.maxStoredItems);
+        cfg.refreshUtilitySpan = deriveRefreshUtilitySpan(cfg.maxRepresentatives);
+    }
+
+    private static Path resolveOutDir(Config cfg, String mode, Integer ratioInt) {
         String m = (mode == null || mode.isBlank()) ? "padme" : mode.trim().toLowerCase();
-        Path base = Path.of("src/main/resources/data/output").resolve(m);
+        Path base = resolveDatasetOutRoot(cfg).resolve(m);
         if (ratioInt == null) return base;
         return base.resolve(Integer.toString(ratioInt));
+    }
+
+    private static Path resolveDatasetOutRoot(Config cfg) {
+        return Path.of("src/main/resources/data/output").resolve(resolveDatasetKey(cfg));
+    }
+
+    private static String resolveDatasetKey(Config cfg) {
+        String fileName = Path.of(cfg.path).getFileName().toString();
+        int dot = fileName.lastIndexOf('.');
+        String stem = dot >= 0 ? fileName.substring(0, dot) : fileName;
+        String lower = stem.toLowerCase();
+
+        if (lower.endsWith("_train")) {
+            lower = lower.substring(0, lower.length() - 6);
+        }
+
+        return switch (lower) {
+            case "creditcard" -> "credit_card";
+            case "foresttype" -> "forest_type";
+            default -> lower;
+        };
     }
 
     private static Config cloneConfig(Config src) {
@@ -531,6 +591,7 @@ public final class Runner {
         c.reportEvery = src.reportEvery;
 
         c.ignoreColumns = src.ignoreColumns;
+        c.vectorTransform = src.vectorTransform;
 
         return c;
     }

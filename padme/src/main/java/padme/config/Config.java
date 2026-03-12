@@ -1,105 +1,108 @@
 package padme.config;
 
-import java.util.Arrays;
+import java.util.List;
 
 public final class Config {
   public String path;
   public String separator = ",";
   public int idColumn = -1;
 
-  public String mode;
-  public Integer nodes;
+  public int refreshUtilitySpan = 16;
+  public String mode = "baseline";
 
-  public Integer pssViewSize;
-  public Integer pssShuffleLength;
-  public Integer pssCycleEveryItems;
+  public int nodes = 1;
 
-  public Integer replFanout;
-  public Integer replBatchSize;
-  public Integer replCycleEveryItems;
+  public int pssViewSize = 4;
+  public int pssShuffleLength = 4;
+  public int pssCycleEveryItems = 50;
 
-  public double[] dataKeepRatios;
+  public int replFanout = 2;
+  public int replBatchSize = 32;
+  public int replCycleEveryItems = 50;
 
-  public Double keepRatio;
+  public double keepRatio = 0.1;
+  public List<Double> dataKeepRatios;
 
   public Integer maxStoredItems;
   public Integer maxRepresentatives;
-  public Integer refreshUtilitySpan;
 
-  public Integer reportEvery;
+  public int reportEvery = 1000;
 
-  public Integer distBasePort;
-  public Integer distCollectorPort;
-  public Long distSeed;
-  public Integer distGraceMs;
-  public Integer distMaxRounds;
-  public String distTmpDir;
+  public int distBasePort = 9000;
+  public int distCollectorPort = 9100;
+  public long distSeed = 1337L;
+  public int distGraceMs = 2000;
+  public int distMaxRounds = 100;
 
-  public String[] ignoreColumns = new String[0];
+  public String[] ignoreColumns;
+
+  public String vectorTransform;
 
   public void validate() {
     if (path == null || path.isBlank())
-      throw new IllegalArgumentException("config.path is required and must be non-empty");
+      throw new IllegalArgumentException("config.path is required");
 
-    if (mode == null || (!mode.equalsIgnoreCase("padme") && !mode.equalsIgnoreCase("baseline") && !mode.equalsIgnoreCase("random")))
-      throw new IllegalArgumentException("config.mode must be 'padme', 'baseline' or 'random'");
+    if (separator == null || separator.isEmpty())
+      throw new IllegalArgumentException("config.separator is required");
 
-    if (nodes == null || nodes <= 0)
+    if (mode == null || mode.isBlank())
+      throw new IllegalArgumentException("config.mode is required");
+
+    if (nodes <= 0)
       throw new IllegalArgumentException("config.nodes must be > 0");
 
-    if (separator == null || separator.isBlank()) separator = ",";
+    if (pssViewSize <= 0)
+      throw new IllegalArgumentException("config.pssViewSize must be > 0");
 
-    if (pssViewSize == null) pssViewSize = Math.max(1, Math.min(8, nodes - 1));
-    if (pssShuffleLength == null) pssShuffleLength = Math.max(1, Math.min(pssViewSize, 4));
-    if (pssCycleEveryItems == null || pssCycleEveryItems <= 0) pssCycleEveryItems = 200;
+    if (pssShuffleLength <= 0)
+      throw new IllegalArgumentException("config.pssShuffleLength must be > 0");
 
-    if (replFanout == null) replFanout = Math.max(1, Math.min(2, nodes - 1));
-    if (replBatchSize == null || replBatchSize <= 0) replBatchSize = 32;
-    if (replCycleEveryItems == null || replCycleEveryItems <= 0) replCycleEveryItems = 200;
+    if (pssCycleEveryItems <= 0)
+      throw new IllegalArgumentException("config.pssCycleEveryItems must be > 0");
 
-    if (reportEvery == null || reportEvery <= 0)
+    if (replFanout <= 0)
+      throw new IllegalArgumentException("config.replFanout must be > 0");
+
+    if (replBatchSize <= 0)
+      throw new IllegalArgumentException("config.replBatchSize must be > 0");
+
+    if (replCycleEveryItems <= 0)
+      throw new IllegalArgumentException("config.replCycleEveryItems must be > 0");
+
+    if (keepRatio <= 0.0 || keepRatio > 1.0)
+      throw new IllegalArgumentException("config.keepRatio must be in (0,1]");
+
+    if (maxStoredItems != null && maxStoredItems <= 0)
+      throw new IllegalArgumentException("config.maxStoredItems must be > 0");
+
+    if (reportEvery <= 0)
       throw new IllegalArgumentException("config.reportEvery must be > 0");
 
-    if (distBasePort == null || distBasePort <= 0) distBasePort = 9000;
-    if (distCollectorPort == null || distCollectorPort <= 0) distCollectorPort = 9100;
-    if (distSeed == null) distSeed = 1337L;
-    if (distGraceMs == null || distGraceMs < 0) distGraceMs = 2000;
-    if (distMaxRounds == null || distMaxRounds <= 0) distMaxRounds = 10_000;
-    if (distTmpDir == null) distTmpDir = "";
-
-    if (ignoreColumns == null) ignoreColumns = new String[0];
-
-    for (int i = 0; i < ignoreColumns.length; i++) {
-      String s = ignoreColumns[i];
-      ignoreColumns[i] = (s == null) ? "" : s.trim();
+    if (vectorTransform == null || vectorTransform.isBlank()) {
+      vectorTransform = "log_zscore";
     }
 
-    ignoreColumns = Arrays.stream(ignoreColumns)
-            .filter(s -> s != null && !s.isBlank())
-            .distinct()
-            .toArray(String[]::new);
-
-    if (dataKeepRatios != null && dataKeepRatios.length > 0) {
-      for (double r : dataKeepRatios) {
-        if (Double.isNaN(r) || Double.isInfinite(r) || r <= 0.0 || r > 1.0)
-          throw new IllegalArgumentException("config.dataKeepRatios must contain values in (0,1]");
-      }
-    } else {
-      if (mode.equalsIgnoreCase("padme") || mode.equalsIgnoreCase("random")) {
-        if (maxStoredItems == null || maxStoredItems <= 0)
-          throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=padme or mode=random and dataKeepRatios is not set");
-      }
+    String vt = vectorTransform.trim().toLowerCase();
+    if (!vt.equals("zscore") &&
+            !vt.equals("log_zscore") &&
+            !vt.equals("robust") &&
+            !vt.equals("log_robust")) {
+      throw new IllegalArgumentException("config.vectorTransform must be one of: zscore, log_zscore, robust, log_robust");
     }
+    vectorTransform = vt;
 
     if (mode.equalsIgnoreCase("padme")) {
-      if (maxRepresentatives == null || maxRepresentatives <= 0)
-        throw new IllegalArgumentException("config.maxRepresentatives must be > 0 when mode=padme");
+      if (maxStoredItems != null && maxStoredItems <= 0)
+        throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=padme");
 
-      if (maxStoredItems != null && maxRepresentatives >= maxStoredItems)
-        throw new IllegalArgumentException("config.maxRepresentatives must be < config.maxStoredItems when mode=padme");
+      if (maxRepresentatives != null && maxRepresentatives <= 0)
+        throw new IllegalArgumentException("config.maxRepresentatives must be > 0 when provided");
 
-      if (refreshUtilitySpan == null || refreshUtilitySpan <= 0)
-        throw new IllegalArgumentException("config.refreshUtilitySpan must be > 0 when mode=padme");
+      if (maxStoredItems != null && maxRepresentatives != null && maxRepresentatives >= maxStoredItems)
+        throw new IllegalArgumentException("config.maxRepresentatives must be < config.maxStoredItems when provided");
+
+      if (refreshUtilitySpan < 0)
+        throw new IllegalArgumentException("config.refreshUtilitySpan must be >= 0 when provided");
     }
   }
 
@@ -122,7 +125,8 @@ public final class Config {
             ", maxStoredItems=" + maxStoredItems +
             ", maxRepresentatives=" + maxRepresentatives +
             ", reportEvery=" + reportEvery +
-            ", ignoreColumns=" + Arrays.toString(ignoreColumns) +
+            ", ignoreColumns=" + java.util.Arrays.toString(ignoreColumns) +
+            ", vectorTransform='" + vectorTransform + '\'' +
             '}';
   }
 }

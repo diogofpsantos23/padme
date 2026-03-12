@@ -86,8 +86,8 @@ public final class NodeProcess {
             String[] header;
             try (CsvRowReader rdr = new CsvRowReader(input, cfg.separator, true)) {
                 header = rdr.header();
-                VectorMapper mapper = NumericVectorMapper.fromHeader(header, cfg.idColumn, cfg.ignoreColumns);
-                ingestAll(cfg, rdr, mapper, node, metrics);
+                // VectorMapper mapper = NumericVectorMapper.fromHeader(header, cfg.idColumn, cfg.ignoreColumns);
+                ingestAll(cfg, rdr, null, node, metrics);
             }
 
             FramedJson.write(cout, CtrlMsg.ingestDone(nodeId));
@@ -132,7 +132,7 @@ public final class NodeProcess {
             ctrlThread.setDaemon(true);
             ctrlThread.start();
 
-            long seed = (cfg.distSeed == null ? 1337L : cfg.distSeed) + (nodeId * 31L);
+            long seed = 0;
             Random rnd = new Random(seed);
 
             int maxRounds = cfg.distMaxRounds;

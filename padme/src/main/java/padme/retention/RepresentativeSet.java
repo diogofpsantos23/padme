@@ -6,41 +6,41 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class RepresentativeSet {
-  public static final class UtilityScore {
-    public final long nearestRepKey;
-    public final double utility;
+  public record UtilityScore(long nearestRepKey, double utility) {
+  }
 
-    public UtilityScore(long nearestRepKey, double utility) {
-      this.nearestRepKey = nearestRepKey;
-      this.utility = utility;
-    }
+  public record NeighborScore(long nearestRepKey, double nearestUtility, long secondNearestRepKey, double secondNearestUtility) {
   }
 
   public static final class Change {
     public final boolean changed;
+    public final boolean membershipChanged;
     public final long addedRepKey;
     public final long removedRepKey;
+    public final long updatedRepKey;
 
-    private Change(boolean changed, long addedRepKey, long removedRepKey) {
+    private Change(boolean changed, boolean membershipChanged, long addedRepKey, long removedRepKey, long updatedRepKey) {
       this.changed = changed;
+      this.membershipChanged = membershipChanged;
       this.addedRepKey = addedRepKey;
       this.removedRepKey = removedRepKey;
+      this.updatedRepKey = updatedRepKey;
     }
 
     public static Change none() {
-      return new Change(false, -1L, -1L);
+      return new Change(false, false, -1L, -1L, -1L);
     }
 
     public static Change added(long key) {
-      return new Change(true, key, -1L);
+      return new Change(true, true, key, -1L, -1L);
     }
 
     public static Change replaced(long addedKey, long removedKey) {
-      return new Change(true, addedKey, removedKey);
+      return new Change(true, true, addedKey, removedKey, -1L);
     }
 
     public static Change updated(long key) {
-      return new Change(true, key, key);
+      return new Change(true, false, -1L, -1L, key);
     }
   }
 
@@ -65,6 +65,24 @@ public final class RepresentativeSet {
     this.distance = distance;
   }
 
+  public static double computeRepresentativeUtility(double nearestDistance, double secondNearestDistance) {
+    if (!Double.isFinite(nearestDistance)) {
+      return Double.POSITIVE_INFINITY;
+    }
+
+    double base = Math.log1p(Math.max(0.0, nearestDistance));
+
+    if (!Double.isFinite(secondNearestDistance) || secondNearestDistance <= 0.0) {
+      return base;
+    }
+
+    double ratio = nearestDistance / secondNearestDistance;
+    if (ratio < 0.0) ratio = 0.0;
+    if (ratio > 1.0) ratio = 1.0;
+
+    return base * (1.0 + 0.25 * ratio);
+  }
+
   public int size() {
     return reps.size();
   }
@@ -77,18 +95,52 @@ public final class RepresentativeSet {
     return reps.size() >= maxRepresentatives;
   }
 
-  public boolean contains(long key) {
-    return indexOfKey(key) >= 0;
+  public UtilityScore score(long itemKey, float[] x) {
+    NeighborScore s = scoreWithSecond(itemKey, x);
+    return new UtilityScore(s.nearestRepKey, s.nearestUtility);
   }
 
-  public UtilityScore score(long itemKey, float[] x) {
-    if (reps.isEmpty()) return new UtilityScore(-1L, Double.POSITIVE_INFINITY);
+  public NeighborScore scoreWithSecond(long itemKey, float[] x) {
+    if (reps.isEmpty()) {
+      return new NeighborScore(-1L, Double.POSITIVE_INFINITY, -1L, Double.POSITIVE_INFINITY);
+    }
 
     double best = Double.POSITIVE_INFINITY;
     long bestKey = -1L;
 
+    double second = Double.POSITIVE_INFINITY;
+    long secondKey = -1L;
+
     for (Rep r : reps) {
       if (r.key == itemKey) continue;
+
+      double d = distance.between(x, r.v);
+      if (!Double.isFinite(d)) continue;
+
+      if (d < best) {
+        second = best;
+        secondKey = bestKey;
+        best = d;
+        bestKey = r.key;
+      } else if (d < second) {
+        second = d;
+        secondKey = r.key;
+      }
+    }
+
+    if (bestKey < 0L) {
+      return new NeighborScore(-1L, Double.POSITIVE_INFINITY, -1L, Double.POSITIVE_INFINITY);
+    }
+
+    return new NeighborScore(bestKey, best, secondKey, second);
+  }
+
+  public UtilityScore bestExcluding(long itemKey, float[] x, long excludedRepKey) {
+    double best = Double.POSITIVE_INFINITY;
+    long bestKey = -1L;
+
+    for (Rep r : reps) {
+      if (r.key == itemKey || r.key == excludedRepKey) continue;
 
       double d = distance.between(x, r.v);
       if (Double.isFinite(d) && d < best) {
@@ -117,11 +169,11 @@ public final class RepresentativeSet {
     return Double.POSITIVE_INFINITY;
   }
 
-  public Change maybeUpdate(long key, float[] x, double uOfX) {
+  public Change maybeUpdate(long key, float[] x, double repUtilityOfX) {
     if (maxRepresentatives <= 0) return Change.none();
 
     float[] copy = x.clone();
-    double newU = Double.isFinite(uOfX) ? uOfX : 0.0;
+    double newU = Double.isFinite(repUtilityOfX) ? repUtilityOfX : 0.0;
 
     int existingIdx = indexOfKey(key);
     if (existingIdx >= 0) {
@@ -141,7 +193,7 @@ public final class RepresentativeSet {
     }
 
     int worstIdx = 0;
-    double worstU = worstScore(reps.get(0).utility);
+    double worstU = worstScore(reps.getFirst().utility);
 
     for (int i = 1; i < n; i++) {
       double u = worstScore(reps.get(i).utility);
@@ -160,13 +212,6 @@ public final class RepresentativeSet {
     return Change.none();
   }
 
-  public boolean remove(long key) {
-    int idx = indexOfKey(key);
-    if (idx < 0) return false;
-    reps.remove(idx);
-    return true;
-  }
-
   private int indexOfKey(long key) {
     for (int i = 0; i < reps.size(); i++) {
       if (reps.get(i).key == key) return i;
@@ -183,7 +228,7 @@ public final class RepresentativeSet {
     if (n == 0) return;
 
     if (n == 1) {
-      reps.get(0).utility = Double.POSITIVE_INFINITY;
+      reps.getFirst().utility = Double.POSITIVE_INFINITY;
       return;
     }
 
@@ -191,13 +236,23 @@ public final class RepresentativeSet {
       Rep ri = reps.get(i);
 
       double best = Double.POSITIVE_INFINITY;
+      double second = Double.POSITIVE_INFINITY;
+
       for (int j = 0; j < n; j++) {
         if (i == j) continue;
+
         double d = distance.between(ri.v, reps.get(j).v);
-        if (Double.isFinite(d) && d < best) best = d;
+        if (!Double.isFinite(d)) continue;
+
+        if (d < best) {
+          second = best;
+          best = d;
+        } else if (d < second) {
+          second = d;
+        }
       }
 
-      ri.utility = Double.isFinite(best) ? best : Double.POSITIVE_INFINITY;
+      ri.utility = computeRepresentativeUtility(best, second);
     }
   }
 

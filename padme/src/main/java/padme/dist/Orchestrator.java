@@ -29,13 +29,13 @@ public final class Orchestrator {
         Path cfgPath = Path.of(cfgArg);
         Config cfg = cfgArg.equals("config.json") ? ConfigLoader.loadDefault() : ConfigLoader.loadFromFile(cfgPath);
 
-        if (cfg.nodes == null || cfg.nodes <= 1) {
+        if (cfg.nodes <= 1) {
             throw new IllegalArgumentException("config.nodes must be > 1 for orchestrator");
         }
 
         int n = cfg.nodes;
 
-        String tmpDirRaw = (cfg.distTmpDir == null) ? "" : cfg.distTmpDir.trim();
+        String tmpDirRaw = null;
         Path tmpDir = tmpDirRaw.isEmpty()
                 ? Path.of(System.getProperty("java.io.tmpdir"), "padme-partitions-" + Instant.now().toEpochMilli())
                 : Path.of(tmpDirRaw);
