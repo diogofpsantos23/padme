@@ -8,11 +8,11 @@ RAW_DIR = BASE_DIR / "raw"
 IN_DIR = BASE_DIR / "input"
 OUT_DIR = BASE_DIR / "output"
 
-RAW_PATH = RAW_DIR / "unsw_nb15.parquet"
-OUT_TRAIN = IN_DIR / "unsw_nb15_train.csv"
-OUT_TEST = OUT_DIR / "unsw_nb15_test.csv"
+RAW_PATH = RAW_DIR / "kdd1999.csv"
+OUT_TRAIN = IN_DIR / "kdd1999_train.csv"
+OUT_TEST = OUT_DIR / "kdd1999_test.csv"
 
-TRAIN_SIZE = 20000
+TRAIN_SIZE = 100
 TEST_SIZE = 4000
 RANDOM_STATE = 42
 TARGET_COL = "label"
@@ -20,10 +20,10 @@ TARGET_COL = "label"
 IS_MULTI_CLASS = False
 IS_REGRESSION = False
 
-TRAIN_POS_RATIO = 0.20
-TEST_POS_RATIO = 0.20
+TRAIN_POS_RATIO = None
+TEST_POS_RATIO = None
 
-CATEGORICAL_COLS = ["proto", "service", "state"]
+CATEGORICAL_COLS = []
 
 
 def load_df(path: Path) -> pd.DataFrame:
@@ -197,7 +197,11 @@ else:
     df_1 = df[df[TARGET_COL] == 1]
     df_0 = df[df[TARGET_COL] == 0]
 
-    n0_train, n1_train = class_counts_from_ratio(TRAIN_SIZE, TRAIN_POS_RATIO)
+    raw_counts = df[TARGET_COL].value_counts().to_dict()
+    raw_pos_ratio = raw_counts.get(1, 0) / len(df)
+
+    train_pos_ratio = raw_pos_ratio if TRAIN_POS_RATIO is None else TRAIN_POS_RATIO
+    n0_train, n1_train = class_counts_from_ratio(TRAIN_SIZE, train_pos_ratio)
 
     if len(df_1) < n1_train or len(df_0) < n0_train:
         raise ValueError(

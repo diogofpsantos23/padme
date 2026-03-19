@@ -119,7 +119,6 @@ public final class Orchestrator {
                 broadcast(conns, CtrlMsg.stop(cfg.distGraceMs));
 
                 Path out = resolveOutPath(cfg);
-                collectMergedNoDedup(conns, n, header, out);
             }
 
             long waitMs = (cfg.distGraceMs <= 0) ? 3000L : (cfg.distGraceMs + 3000L);

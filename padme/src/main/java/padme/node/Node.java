@@ -7,15 +7,24 @@ import padme.retention.RetentionDecision;
 import padme.retention.RetentionPolicy;
 import padme.store.KvStore;
 
-import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.Random;
 
 public final class Node {
     public final int id;
+
+    private final String mode;
     private final RetentionPolicy retention;
     private final KvStore kv;
+
+    private final int forwardWindowSize;
+    private final double forwardRatio;
+    private final List<Record> localForwardBuffer = new ArrayList<>();
+    private final Random rng;
 
     private int dim = -1;
     private long versionCounter = 0;
@@ -23,10 +32,14 @@ public final class Node {
     private final Deque<Record> replQueue = new ArrayDeque<>();
     private final int replQueueMax = 100_000;
 
-    public Node(int id, RetentionPolicy retention, KvStore kv) {
+    public Node(int id, String mode, RetentionPolicy retention, KvStore kv, int forwardWindowSize, double forwardRatio) {
         this.id = id;
+        this.mode = mode;
         this.retention = retention;
         this.kv = kv;
+        this.forwardWindowSize = forwardWindowSize;
+        this.forwardRatio = forwardRatio;
+        this.rng = new Random(1337L + id);
     }
 
     public RetentionDecision onLocalItem(long key, DataItem item, float[] vector) {
@@ -49,7 +62,7 @@ public final class Node {
         Record rec = new Record(key, item, meta);
         kv.put(key, rec);
 
-        enqueueForReplication(rec);
+        bufferLocalForForwarding(rec);
         return d;
     }
 
@@ -78,7 +91,6 @@ public final class Node {
         Record rec = new Record(incoming.key, incoming.item, meta);
         kv.put(incoming.key, rec);
 
-        enqueueForReplication(rec);
         return d;
     }
 
@@ -95,6 +107,82 @@ public final class Node {
 
     public int replicationQueueSize() {
         return replQueue.size();
+    }
+
+    public void flushPendingForwardWindow() {
+        flushForwardWindow();
+    }
+
+    private void bufferLocalForForwarding(Record rec) {
+        if (rec == null) return;
+
+        localForwardBuffer.add(rec);
+
+        if (localForwardBuffer.size() >= forwardWindowSize) {
+            flushForwardWindow();
+        }
+    }
+
+    private void flushForwardWindow() {
+        if (localForwardBuffer.isEmpty()) return;
+
+        if (mode.equalsIgnoreCase("baseline")) {
+            for (Record r : localForwardBuffer) {
+                enqueueForReplication(r);
+            }
+            localForwardBuffer.clear();
+            return;
+        }
+
+        int n = localForwardBuffer.size();
+        int k = (int) Math.round(n * forwardRatio);
+
+        if (k <= 0) {
+            localForwardBuffer.clear();
+            return;
+        }
+
+        if (k >= n) {
+            for (Record r : localForwardBuffer) {
+                enqueueForReplication(r);
+            }
+            localForwardBuffer.clear();
+            return;
+        }
+
+        if (mode.equalsIgnoreCase("random")) {
+            List<Record> shuffled = new ArrayList<>(localForwardBuffer);
+            Collections.shuffle(shuffled, rng);
+
+            for (int i = 0; i < k; i++) {
+                enqueueForReplication(shuffled.get(i));
+            }
+
+            localForwardBuffer.clear();
+            return;
+        }
+
+        if (mode.equalsIgnoreCase("padme")) {
+            List<Record> ranked = new ArrayList<>(localForwardBuffer);
+            ranked.sort((a, b) -> Double.compare(safeUtility(b), safeUtility(a)));
+
+            for (int i = 0; i < k; i++) {
+                enqueueForReplication(ranked.get(i));
+            }
+
+            localForwardBuffer.clear();
+            return;
+        }
+
+        for (Record r : localForwardBuffer) {
+            enqueueForReplication(r);
+        }
+        localForwardBuffer.clear();
+    }
+
+    private double safeUtility(Record r) {
+        if (r == null || r.meta == null) return Double.NEGATIVE_INFINITY;
+        return r.meta.utility;
     }
 
     private void enqueueForReplication(Record rec) {

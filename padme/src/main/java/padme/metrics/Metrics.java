@@ -26,6 +26,8 @@ public final class Metrics {
 
   public long winRepReplaced = 0;
 
+  public long totalBytesSent = 0L;
+
   public void record(RetentionDecision d) {
     switch (d.kind) {
       case ADMITTED -> admitted++;

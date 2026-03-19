@@ -1,12 +1,14 @@
 package padme.run;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import padme.config.Config;
 import padme.data.CsvRowReader;
 import padme.data.RetainedDatasetWriter;
@@ -31,7 +33,14 @@ public final class Runner {
     private Runner() {}
 
     public static void run(Config cfg) {
-        if (cfg.dataKeepRatios != null && !cfg.dataKeepRatios.isEmpty() && (cfg.mode.equalsIgnoreCase("padme") || cfg.mode.equalsIgnoreCase("random"))) {
+        if (cfg.mode.equalsIgnoreCase("baseline")) {
+            cfg.forwardRatio = 1.0;
+        } else {
+            cfg.forwardRatio = cfg.keepRatio;
+        }
+
+        if (cfg.dataKeepRatios != null && !cfg.dataKeepRatios.isEmpty() &&
+                (cfg.mode.equalsIgnoreCase("padme") || cfg.mode.equalsIgnoreCase("random"))) {
             runSweep(cfg);
             return;
         }
@@ -52,6 +61,7 @@ public final class Runner {
 
             Config cfg = cloneConfig(base);
             cfg.keepRatio = r;
+            cfg.forwardRatio = cfg.keepRatio;
             cfg.maxStoredItems = computePerNodeBudget(totalRows, cfg.nodes, r);
 
             if (cfg.mode.equalsIgnoreCase("padme")) {
@@ -80,7 +90,7 @@ public final class Runner {
         Metrics m = new Metrics();
         RetentionPolicy policy = createPolicy(cfg, m, 0);
 
-        Node node0 = createNode(0, policy);
+        Node node0 = createNode(0, cfg, policy);
 
         long startNs = System.nanoTime();
 
@@ -92,6 +102,7 @@ public final class Runner {
             VectorMapper mapper = NumericVectorMapper.fit(header, cfg.idColumn, cfg.ignoreColumns, fitRows, cfg.vectorTransform);
 
             ingestLoopSingle(cfg, rdr, mapper, node0, m, policy, startNs);
+            node0.flushPendingForwardWindow();
         } catch (Exception e) {
             throw new RuntimeException("Ingest failed while reading: " + cfg.path, e);
         }
@@ -103,6 +114,7 @@ public final class Runner {
         );
 
         writeOutputsSingle(cfg, outDir, header, node0);
+        writeMetricsJson(cfg, outDir, m.totalBytesSent);
     }
 
     private static void runMultiNodeOnce(Config cfg, Path outDir, Integer ratioInt) {
@@ -113,7 +125,7 @@ public final class Runner {
 
         for (int i = 0; i < n; i++) {
             ms[i] = new Metrics();
-            nodes[i] = createNode(i, createPolicy(cfg, ms[i], i));
+            nodes[i] = createNode(i, cfg, createPolicy(cfg, ms[i], i));
         }
 
         long seed = 1337L;
@@ -131,14 +143,11 @@ public final class Runner {
 
             rowsRead = ingestLoopMulti(cfg, rdr, mapper, nodes, ms, overlay, startNs);
 
-            if (cfg.mode.equalsIgnoreCase("baseline")) {
-                forceFullReplicationBaseline(nodes, ms);
-                clearReplicationQueues(nodes);
-                long elapsedNs = System.nanoTime() - startNs;
-                printMultiProgress(cfg, nodes, ms, elapsedNs, rowsRead);
-            } else {
-                runBackgroundReplicationLoop(cfg, nodes, ms, overlay, startNs, rowsRead);
+            for (Node node : nodes) {
+                node.flushPendingForwardWindow();
             }
+
+            runBackgroundReplicationLoop(cfg, nodes, ms, overlay, startNs, rowsRead);
 
         } catch (Exception e) {
             throw new RuntimeException("Ingest failed while reading: " + cfg.path, e);
@@ -148,6 +157,7 @@ public final class Runner {
         printFinalPerNode(cfg, nodes, ms);
 
         writeOutputsMulti(cfg, outDir, header, nodes);
+        writeMetricsJson(cfg, outDir, totalBytesSent(ms));
 
         if (ratioInt != null) System.out.println("Wrote outputs: " + outDir.toAbsolutePath());
     }
@@ -256,43 +266,15 @@ public final class Runner {
         printMultiProgress(cfg, nodes, ms, elapsedNs, rowsRead);
     }
 
-    private static void forceFullReplicationBaseline(Node[] nodes, Metrics[] ms) {
-        List<Record> universe = unionByKeyPreferNewest(nodes);
-        for (int i = 0; i < nodes.length; i++) {
-            Metrics m = ms[i];
-            for (Record r : universe) {
-                RetentionDecision d = nodes[i].onRemoteRecord(r);
-                m.seen++;
-                m.record(d);
-            }
-        }
-    }
-
-    private static List<Record> unionByKeyPreferNewest(Node[] nodes) {
-        Map<Long, Record> best = new HashMap<>();
-        for (Node nd : nodes) {
-            for (Record r : nd.snapshotRecords()) {
-                if (r == null || r.meta == null) continue;
-                Record cur = best.get(r.key);
-                if (cur == null || cur.meta == null || r.meta.version > cur.meta.version) {
-                    best.put(r.key, r);
-                }
-            }
-        }
-        return new ArrayList<>(best.values());
-    }
-
-    private static void clearReplicationQueues(Node[] nodes) {
-        for (Node nd : nodes) {
-            while (nd.replicationQueueSize() > 0) {
-                nd.drainReplicationBatch(1024);
-            }
-        }
-    }
-
     private static int totalReplQueueSize(Node[] nodes) {
         int total = 0;
         for (Node n : nodes) total += n.replicationQueueSize();
+        return total;
+    }
+
+    private static long totalBytesSent(Metrics[] ms) {
+        long total = 0L;
+        for (Metrics m : ms) total += m.totalBytesSent;
         return total;
     }
 
@@ -310,9 +292,9 @@ public final class Runner {
         return every != null && every > 0 && (rowIdx + 1) % every == 0;
     }
 
-    private static Node createNode(int id, RetentionPolicy policy) {
+    private static Node createNode(int id, Config cfg, RetentionPolicy policy) {
         KvStore kv = new InMemoryKvStore();
-        return new Node(id, policy, kv);
+        return new Node(id, cfg.mode, policy, kv, cfg.forwardWindowSize, cfg.forwardRatio);
     }
 
     private static RetentionPolicy createPolicy(Config cfg, Metrics m, int nodeId) {
@@ -435,26 +417,52 @@ public final class Runner {
             for (int p : peers) {
                 if (p < 0 || p >= n || p == i) continue;
 
-                Metrics m = ms[p];
+                Metrics receiverMetrics = ms[p];
                 for (Record r : batch) {
+                    ms[i].totalBytesSent += computeRecordPayloadBytes(r);
+
                     RetentionDecision d = nodes[p].onRemoteRecord(r);
-                    m.seen++;
-                    m.record(d);
+                    receiverMetrics.seen++;
+                    receiverMetrics.record(d);
                 }
             }
         }
     }
 
+    private static long computeRecordPayloadBytes(Record r) {
+        if (r == null) return 0L;
+
+        long bytes = 0L;
+
+        bytes += Long.BYTES;
+
+        if (r.meta != null) {
+            bytes += Long.BYTES;
+            bytes += Double.BYTES;
+
+            if (r.meta.vector != null) {
+                bytes += (long) r.meta.vector.length * Float.BYTES;
+            }
+        }
+
+        if (r.item != null && r.item.fields != null) {
+            for (String s : r.item.fields) {
+                if (s != null) {
+                    bytes += s.getBytes(StandardCharsets.UTF_8).length;
+                }
+            }
+        }
+
+        return bytes;
+    }
+
     private static void writeOutputsSingle(Config cfg, Path outDir, String[] header, Node node0) {
         String prefix = cfg.mode.trim().toLowerCase();
         Path outNode = outDir.resolve(prefix + "_node0.csv");
-        Path outMerged = outDir.resolve(prefix + "_merged.csv");
 
         try {
             RetainedDatasetWriter.writeSnapshotCsv(outNode, header, node0.snapshotRecords());
-            RetainedDatasetWriter.writeSnapshotCsv(outMerged, header, node0.snapshotRecords());
             System.out.println("Wrote retained dataset: " + outNode.toAbsolutePath());
-            System.out.println("Wrote retained dataset: " + outMerged.toAbsolutePath());
         } catch (Exception e) {
             throw new RuntimeException("Failed to write retained dataset snapshot CSV", e);
         }
@@ -469,26 +477,28 @@ public final class Runner {
                 RetainedDatasetWriter.writeSnapshotCsv(outNode, header, nodes[i].snapshotRecords());
                 System.out.println("Wrote retained dataset: " + outNode.toAbsolutePath());
             }
-
-            List<Record> aggregated = aggregateSnapshotsKeepDuplicates(nodes);
-            Path outMerged = outDir.resolve(prefix + "_merged.csv");
-            RetainedDatasetWriter.writeSnapshotCsv(outMerged, header, aggregated);
-            System.out.println("Wrote retained dataset: " + outMerged.toAbsolutePath());
-
         } catch (Exception e) {
             throw new RuntimeException("Failed to write retained dataset snapshot CSV", e);
         }
     }
 
-    private static List<Record> aggregateSnapshotsKeepDuplicates(Node[] nodes) {
-        int total = 0;
-        for (Node nd : nodes) total += nd.storedCount();
+    private static void writeMetricsJson(Config cfg, Path outDir, long totalBytesSent) {
+        try {
+            ObjectMapper om = new ObjectMapper();
 
-        List<Record> out = new ArrayList<>(Math.max(16, total));
-        for (Node nd : nodes) {
-            out.addAll(nd.snapshotRecords());
+            Map<String, Object> root = new LinkedHashMap<>();
+            root.put("dataset", resolveDatasetKey(cfg));
+            root.put("mode", cfg.mode.trim().toLowerCase());
+            root.put("keepRatio", cfg.keepRatio);
+            root.put("forwardRatio", cfg.forwardRatio);
+            root.put("nodes", cfg.nodes);
+            root.put("totalBytesSent", totalBytesSent);
+
+            Path out = outDir.resolve("metrics.json");
+            om.writerWithDefaultPrettyPrinter().writeValue(out.toFile(), root);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to write metrics.json", e);
         }
-        return out;
     }
 
     private static void printPerNodeProgress(Node[] nodes, Metrics[] ms, long elapsedNs) {
@@ -580,6 +590,9 @@ public final class Runner {
         c.replFanout = src.replFanout;
         c.replBatchSize = src.replBatchSize;
         c.replCycleEveryItems = src.replCycleEveryItems;
+
+        c.forwardWindowSize = src.forwardWindowSize;
+        c.forwardRatio = src.forwardRatio;
 
         c.dataKeepRatios = src.dataKeepRatios;
         c.keepRatio = src.keepRatio;

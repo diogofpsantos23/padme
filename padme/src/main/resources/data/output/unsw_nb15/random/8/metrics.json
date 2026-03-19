@@ -1,0 +1,8 @@
+{
+  "dataset" : "unsw_nb15",
+  "mode" : "random",
+  "keepRatio" : 0.08,
+  "forwardRatio" : 0.08,
+  "nodes" : 5,
+  "totalBytesSent" : 1267620
+}

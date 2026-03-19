@@ -20,6 +20,9 @@ public final class Config {
   public int replBatchSize = 32;
   public int replCycleEveryItems = 50;
 
+  public int forwardWindowSize = 100;
+  public double forwardRatio = 1.0;
+
   public double keepRatio = 0.1;
   public List<Double> dataKeepRatios;
 
@@ -68,6 +71,12 @@ public final class Config {
 
     if (replCycleEveryItems <= 0)
       throw new IllegalArgumentException("config.replCycleEveryItems must be > 0");
+
+    if (forwardWindowSize <= 0)
+      throw new IllegalArgumentException("config.forwardWindowSize must be > 0");
+
+    if (forwardRatio < 0.0 || forwardRatio > 1.0)
+      throw new IllegalArgumentException("config.forwardRatio must be in [0,1]");
 
     if (keepRatio <= 0.0 || keepRatio > 1.0)
       throw new IllegalArgumentException("config.keepRatio must be in (0,1]");
@@ -121,6 +130,8 @@ public final class Config {
             ", replFanout=" + replFanout +
             ", replBatchSize=" + replBatchSize +
             ", replCycleEveryItems=" + replCycleEveryItems +
+            ", forwardWindowSize=" + forwardWindowSize +
+            ", forwardRatio=" + forwardRatio +
             ", keepRatio=" + keepRatio +
             ", maxStoredItems=" + maxStoredItems +
             ", maxRepresentatives=" + maxRepresentatives +
