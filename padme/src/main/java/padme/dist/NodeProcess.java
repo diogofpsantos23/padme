@@ -302,7 +302,7 @@ public final class NodeProcess {
 
     private static Node createNode(int id, RetentionPolicy policy) {
         KvStore kv = new InMemoryKvStore();
-        return new Node(id, "baseline", policy, kv, 0, 0);
+        return new Node(id, policy, kv, 0);
     }
 
     private static RetentionPolicy createPolicy(Config cfg, Metrics m) {

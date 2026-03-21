@@ -1,17 +1,16 @@
 {
-  "path": "data/input/unsw_nb15_train.csv",
+  "path": "data/input/shuttle_train.csv",
   "mode": "padme",
   "nodes": 5,
   "pssViewSize": 4,
-  "pssShuffleLength": 4,
-  "pssCycleEveryItems": 10,
-  "replFanout": 4,
-  "replBatchSize": 256,
+  "pssShuffleLength": 2,
+  "pssCycleEveryItems": 20,
+  "replFanout": 3,
+  "replBatchSize": 64,
   "replCycleEveryItems": 10,
-  "forwardWindowSize": 100,
-  "forwardRatio": 1.0,
+  "replTtl": 2,
   "vectorTransform": "zscore",
   "dataKeepRatios": [0.02, 0.03, 0.04, 0.05, 0.08, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80],
   "reportEvery": 1000,
-  "ignoreColumns": ["label", "attack_cat"]
+  "ignoreColumns": ["label"]
 }

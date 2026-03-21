@@ -9,37 +9,27 @@ import padme.store.KvStore;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
-import java.util.Random;
 
 public final class Node {
     public final int id;
 
-    private final String mode;
     private final RetentionPolicy retention;
     private final KvStore kv;
-
-    private final int forwardWindowSize;
-    private final double forwardRatio;
-    private final List<Record> localForwardBuffer = new ArrayList<>();
-    private final Random rng;
+    private final int replTtl;
 
     private int dim = -1;
     private long versionCounter = 0;
 
-    private final Deque<Record> replQueue = new ArrayDeque<>();
+    private final Deque<QueuedRecord> replQueue = new ArrayDeque<>();
     private final int replQueueMax = 100_000;
 
-    public Node(int id, String mode, RetentionPolicy retention, KvStore kv, int forwardWindowSize, double forwardRatio) {
+    public Node(int id, RetentionPolicy retention, KvStore kv, int replTtl) {
         this.id = id;
-        this.mode = mode;
         this.retention = retention;
         this.kv = kv;
-        this.forwardWindowSize = forwardWindowSize;
-        this.forwardRatio = forwardRatio;
-        this.rng = new Random(1337L + id);
+        this.replTtl = Math.max(1, replTtl);
     }
 
     public RetentionDecision onLocalItem(long key, DataItem item, float[] vector) {
@@ -61,8 +51,7 @@ public final class Node {
         ItemMetadata meta = new ItemMetadata(v, vector, d.admitted.utility);
         Record rec = new Record(key, item, meta);
         kv.put(key, rec);
-
-        bufferLocalForForwarding(rec);
+        enqueueForReplication(rec, replTtl);
         return d;
     }
 
@@ -90,6 +79,7 @@ public final class Node {
         ItemMetadata meta = new ItemMetadata(incoming.meta.version, vector, d.admitted.utility);
         Record rec = new Record(incoming.key, incoming.item, meta);
         kv.put(incoming.key, rec);
+        enqueueForReplication(rec, replTtl);
 
         return d;
     }
@@ -98,9 +88,14 @@ public final class Node {
         int n = Math.max(0, max);
         List<Record> out = new ArrayList<>(Math.min(n, replQueue.size()));
         while (n-- > 0) {
-            Record r = replQueue.pollFirst();
-            if (r == null) break;
-            out.add(r);
+            QueuedRecord queued = replQueue.pollFirst();
+            if (queued == null) break;
+            out.add(queued.record);
+
+            int nextTtl = queued.ttlRemaining - 1;
+            if (nextTtl > 0) {
+                enqueueForReplication(queued.record, nextTtl);
+            }
         }
         return out;
     }
@@ -109,88 +104,12 @@ public final class Node {
         return replQueue.size();
     }
 
-    public void flushPendingForwardWindow() {
-        flushForwardWindow();
-    }
-
-    private void bufferLocalForForwarding(Record rec) {
-        if (rec == null) return;
-
-        localForwardBuffer.add(rec);
-
-        if (localForwardBuffer.size() >= forwardWindowSize) {
-            flushForwardWindow();
-        }
-    }
-
-    private void flushForwardWindow() {
-        if (localForwardBuffer.isEmpty()) return;
-
-        if (mode.equalsIgnoreCase("baseline")) {
-            for (Record r : localForwardBuffer) {
-                enqueueForReplication(r);
-            }
-            localForwardBuffer.clear();
-            return;
-        }
-
-        int n = localForwardBuffer.size();
-        int k = (int) Math.round(n * forwardRatio);
-
-        if (k <= 0) {
-            localForwardBuffer.clear();
-            return;
-        }
-
-        if (k >= n) {
-            for (Record r : localForwardBuffer) {
-                enqueueForReplication(r);
-            }
-            localForwardBuffer.clear();
-            return;
-        }
-
-        if (mode.equalsIgnoreCase("random")) {
-            List<Record> shuffled = new ArrayList<>(localForwardBuffer);
-            Collections.shuffle(shuffled, rng);
-
-            for (int i = 0; i < k; i++) {
-                enqueueForReplication(shuffled.get(i));
-            }
-
-            localForwardBuffer.clear();
-            return;
-        }
-
-        if (mode.equalsIgnoreCase("padme")) {
-            List<Record> ranked = new ArrayList<>(localForwardBuffer);
-            ranked.sort((a, b) -> Double.compare(safeUtility(b), safeUtility(a)));
-
-            for (int i = 0; i < k; i++) {
-                enqueueForReplication(ranked.get(i));
-            }
-
-            localForwardBuffer.clear();
-            return;
-        }
-
-        for (Record r : localForwardBuffer) {
-            enqueueForReplication(r);
-        }
-        localForwardBuffer.clear();
-    }
-
-    private double safeUtility(Record r) {
-        if (r == null || r.meta == null) return Double.NEGATIVE_INFINITY;
-        return r.meta.utility;
-    }
-
-    private void enqueueForReplication(Record rec) {
-        if (rec == null) return;
+    private void enqueueForReplication(Record rec, int ttlRemaining) {
+        if (rec == null || ttlRemaining <= 0) return;
         if (replQueue.size() >= replQueueMax) {
             replQueue.pollFirst();
         }
-        replQueue.addLast(rec);
+        replQueue.addLast(new QueuedRecord(rec, ttlRemaining));
     }
 
     public List<Record> snapshotRecords() {
@@ -212,5 +131,15 @@ public final class Node {
 
     public double totalUtility() {
         return retention.totalUtility();
+    }
+
+    private static final class QueuedRecord {
+        private final Record record;
+        private final int ttlRemaining;
+
+        private QueuedRecord(Record record, int ttlRemaining) {
+            this.record = record;
+            this.ttlRemaining = ttlRemaining;
+        }
     }
 }

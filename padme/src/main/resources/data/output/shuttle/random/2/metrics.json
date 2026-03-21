@@ -1,0 +1,8 @@
+{
+  "dataset" : "shuttle",
+  "mode" : "random",
+  "keepRatio" : 0.02,
+  "replTtl" : 2,
+  "nodes" : 5,
+  "totalBytesSent" : 5815758
+}

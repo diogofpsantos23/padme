@@ -33,12 +33,6 @@ public final class Runner {
     private Runner() {}
 
     public static void run(Config cfg) {
-        if (cfg.mode.equalsIgnoreCase("baseline")) {
-            cfg.forwardRatio = 1.0;
-        } else {
-            cfg.forwardRatio = cfg.keepRatio;
-        }
-
         if (cfg.dataKeepRatios != null && !cfg.dataKeepRatios.isEmpty() &&
                 (cfg.mode.equalsIgnoreCase("padme") || cfg.mode.equalsIgnoreCase("random"))) {
             runSweep(cfg);
@@ -61,7 +55,6 @@ public final class Runner {
 
             Config cfg = cloneConfig(base);
             cfg.keepRatio = r;
-            cfg.forwardRatio = cfg.keepRatio;
             cfg.maxStoredItems = computePerNodeBudget(totalRows, cfg.nodes, r);
 
             if (cfg.mode.equalsIgnoreCase("padme")) {
@@ -102,7 +95,6 @@ public final class Runner {
             VectorMapper mapper = NumericVectorMapper.fit(header, cfg.idColumn, cfg.ignoreColumns, fitRows, cfg.vectorTransform);
 
             ingestLoopSingle(cfg, rdr, mapper, node0, m, policy, startNs);
-            node0.flushPendingForwardWindow();
         } catch (Exception e) {
             throw new RuntimeException("Ingest failed while reading: " + cfg.path, e);
         }
@@ -142,10 +134,6 @@ public final class Runner {
             VectorMapper mapper = NumericVectorMapper.fit(header, cfg.idColumn, cfg.ignoreColumns, fitRows, cfg.vectorTransform);
 
             rowsRead = ingestLoopMulti(cfg, rdr, mapper, nodes, ms, overlay, startNs);
-
-            for (Node node : nodes) {
-                node.flushPendingForwardWindow();
-            }
 
             runBackgroundReplicationLoop(cfg, nodes, ms, overlay, startNs, rowsRead);
 
@@ -294,7 +282,7 @@ public final class Runner {
 
     private static Node createNode(int id, Config cfg, RetentionPolicy policy) {
         KvStore kv = new InMemoryKvStore();
-        return new Node(id, cfg.mode, policy, kv, cfg.forwardWindowSize, cfg.forwardRatio);
+        return new Node(id, policy, kv, cfg.replTtl);
     }
 
     private static RetentionPolicy createPolicy(Config cfg, Metrics m, int nodeId) {
@@ -484,18 +472,22 @@ public final class Runner {
 
     private static void writeMetricsJson(Config cfg, Path outDir, long totalBytesSent) {
         try {
+            java.nio.file.Files.createDirectories(outDir);
+
             ObjectMapper om = new ObjectMapper();
 
             Map<String, Object> root = new LinkedHashMap<>();
             root.put("dataset", resolveDatasetKey(cfg));
             root.put("mode", cfg.mode.trim().toLowerCase());
             root.put("keepRatio", cfg.keepRatio);
-            root.put("forwardRatio", cfg.forwardRatio);
+            root.put("replTtl", cfg.replTtl);
             root.put("nodes", cfg.nodes);
             root.put("totalBytesSent", totalBytesSent);
 
             Path out = outDir.resolve("metrics.json");
             om.writerWithDefaultPrettyPrinter().writeValue(out.toFile(), root);
+
+            System.out.println("Wrote metrics JSON: " + out.toAbsolutePath());
         } catch (Exception e) {
             throw new RuntimeException("Failed to write metrics.json", e);
         }
@@ -520,30 +512,6 @@ public final class Runner {
         int budget = (int) Math.ceil(totalRows * ratio);
         if (budget <= 0) budget = 1;
         return budget;
-    }
-
-    private static int deriveMaxRepresentatives(int maxStoredItems) {
-        if (maxStoredItems <= 1) return 1;
-
-        int derived = Math.max(8, (int) Math.round(0.08 * maxStoredItems));
-        int cap = Math.max(1, maxStoredItems / 3);
-
-        return Math.min(derived, cap);
-    }
-
-    private static int deriveRefreshUtilitySpan(int maxRepresentatives) {
-        return Math.max(5, (int) Math.round(0.15 * maxRepresentatives));
-    }
-
-    private static void assignDerivedPadmeParams(Config cfg) {
-        if (!cfg.mode.equalsIgnoreCase("padme")) return;
-
-        if (cfg.maxStoredItems == null || cfg.maxStoredItems <= 0) {
-            throw new IllegalArgumentException("maxStoredItems must be > 0 for padme");
-        }
-
-        cfg.maxRepresentatives = deriveMaxRepresentatives(cfg.maxStoredItems);
-        cfg.refreshUtilitySpan = deriveRefreshUtilitySpan(cfg.maxRepresentatives);
     }
 
     private static Path resolveOutDir(Config cfg, String mode, Integer ratioInt) {
@@ -574,6 +542,21 @@ public final class Runner {
         };
     }
 
+    private static void assignDerivedPadmeParams(Config cfg) {
+        if (cfg.maxStoredItems != null && cfg.maxStoredItems > 0) {
+            if (cfg.maxRepresentatives == null || cfg.maxRepresentatives <= 0) {
+                int derived = (int) Math.floor(Math.sqrt(cfg.maxStoredItems));
+                derived = Math.max(1, derived);
+                if (derived >= cfg.maxStoredItems) derived = Math.max(1, cfg.maxStoredItems - 1);
+                cfg.maxRepresentatives = derived;
+            }
+
+            if (cfg.maxRepresentatives >= cfg.maxStoredItems) {
+                cfg.maxRepresentatives = Math.max(1, cfg.maxStoredItems - 1);
+            }
+        }
+    }
+
     private static Config cloneConfig(Config src) {
         Config c = new Config();
         c.path = src.path;
@@ -590,9 +573,7 @@ public final class Runner {
         c.replFanout = src.replFanout;
         c.replBatchSize = src.replBatchSize;
         c.replCycleEveryItems = src.replCycleEveryItems;
-
-        c.forwardWindowSize = src.forwardWindowSize;
-        c.forwardRatio = src.forwardRatio;
+        c.replTtl = src.replTtl;
 
         c.dataKeepRatios = src.dataKeepRatios;
         c.keepRatio = src.keepRatio;

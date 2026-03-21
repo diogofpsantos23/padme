@@ -8,16 +8,16 @@ RAW_DIR = BASE_DIR / "raw"
 IN_DIR = BASE_DIR / "input"
 OUT_DIR = BASE_DIR / "output"
 
-RAW_PATH = RAW_DIR / "kdd1999.csv"
-OUT_TRAIN = IN_DIR / "kdd1999_train.csv"
-OUT_TEST = OUT_DIR / "kdd1999_test.csv"
+RAW_PATH = RAW_DIR / "shuttle.csv"
+OUT_TRAIN = IN_DIR / "shuttle_train.csv"
+OUT_TEST = OUT_DIR / "shuttle_test.csv"
 
-TRAIN_SIZE = 100
-TEST_SIZE = 4000
+TRAIN_SIZE = 32000
+TEST_SIZE = 8000
 RANDOM_STATE = 42
 TARGET_COL = "label"
 
-IS_MULTI_CLASS = False
+IS_MULTI_CLASS = True
 IS_REGRESSION = False
 
 TRAIN_POS_RATIO = None
