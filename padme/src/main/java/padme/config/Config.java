@@ -21,6 +21,10 @@ public final class Config {
   public int replCycleEveryItems = 50;
   public int replTtl = 2;
 
+  public double padmeBinBalanceGamma = 1.0;
+  public double padmeBinBalanceMin = 0.50;
+  public double padmeBinBalanceMax = 2.00;
+
   public double keepRatio = 0.1;
   public List<Double> dataKeepRatios;
 
@@ -72,6 +76,18 @@ public final class Config {
 
     if (replTtl <= 0)
       throw new IllegalArgumentException("config.replTtl must be > 0");
+
+    if (padmeBinBalanceGamma < 0.0)
+      throw new IllegalArgumentException("config.padmeBinBalanceGamma must be >= 0");
+
+    if (padmeBinBalanceMin <= 0.0)
+      throw new IllegalArgumentException("config.padmeBinBalanceMin must be > 0");
+
+    if (padmeBinBalanceMax <= 0.0)
+      throw new IllegalArgumentException("config.padmeBinBalanceMax must be > 0");
+
+    if (padmeBinBalanceMin > padmeBinBalanceMax)
+      throw new IllegalArgumentException("config.padmeBinBalanceMin must be <= config.padmeBinBalanceMax");
 
     if (keepRatio <= 0.0 || keepRatio > 1.0)
       throw new IllegalArgumentException("config.keepRatio must be in (0,1]");
@@ -126,6 +142,9 @@ public final class Config {
             ", replBatchSize=" + replBatchSize +
             ", replCycleEveryItems=" + replCycleEveryItems +
             ", replTtl=" + replTtl +
+            ", padmeBinBalanceGamma=" + padmeBinBalanceGamma +
+            ", padmeBinBalanceMin=" + padmeBinBalanceMin +
+            ", padmeBinBalanceMax=" + padmeBinBalanceMax +
             ", keepRatio=" + keepRatio +
             ", maxStoredItems=" + maxStoredItems +
             ", maxRepresentatives=" + maxRepresentatives +

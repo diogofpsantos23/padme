@@ -1,0 +1,8 @@
+{
+  "dataset" : "higgs",
+  "mode" : "padme",
+  "keepRatio" : 0.4,
+  "replTtl" : 2,
+  "nodes" : 5,
+  "totalBytesSent" : 225475638
+}

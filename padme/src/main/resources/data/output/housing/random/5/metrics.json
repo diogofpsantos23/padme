@@ -1,0 +1,8 @@
+{
+  "dataset" : "housing",
+  "mode" : "random",
+  "keepRatio" : 0.05,
+  "replTtl" : 2,
+  "nodes" : 5,
+  "totalBytesSent" : 9122568
+}

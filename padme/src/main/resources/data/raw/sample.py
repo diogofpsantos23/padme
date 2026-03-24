@@ -8,22 +8,25 @@ RAW_DIR = BASE_DIR / "raw"
 IN_DIR = BASE_DIR / "input"
 OUT_DIR = BASE_DIR / "output"
 
-RAW_PATH = RAW_DIR / "shuttle.csv"
-OUT_TRAIN = IN_DIR / "shuttle_train.csv"
-OUT_TEST = OUT_DIR / "shuttle_test.csv"
+RAW_PATH = RAW_DIR / "higgs.csv"
+OUT_TRAIN = IN_DIR / "higgs_train.csv"
+OUT_TEST = OUT_DIR / "higgs_test.csv"
 
-TRAIN_SIZE = 32000
-TEST_SIZE = 8000
+TRAIN_SIZE = 20000
+TEST_SIZE = 4000
 RANDOM_STATE = 42
 TARGET_COL = "label"
 
-IS_MULTI_CLASS = True
+IS_MULTI_CLASS = False
 IS_REGRESSION = False
 
 TRAIN_POS_RATIO = None
 TEST_POS_RATIO = None
 
 CATEGORICAL_COLS = []
+
+HAS_DRIFT = False
+TIME_COL = None
 
 
 def load_df(path: Path) -> pd.DataFrame:
@@ -97,9 +100,7 @@ def stratified_sample_multiclass(df: pd.DataFrame, size: int, target_col: str, r
     for cls, n in target_counts.items():
         df_cls = df[df[target_col] == cls]
         if len(df_cls) < n:
-            raise ValueError(
-                f"Not enough rows for class {cls}. Need {n}, have {len(df_cls)}."
-            )
+            raise ValueError(f"Not enough rows for class {cls}. Need {n}, have {len(df_cls)}.")
         if n > 0:
             parts.append(df_cls.sample(n=n, random_state=random_state))
 
@@ -126,11 +127,7 @@ def build_label_encoders(df: pd.DataFrame, categorical_cols: list[str]) -> dict[
     return encoders
 
 
-def apply_label_encoders(
-        df: pd.DataFrame,
-        encoders: dict[str, dict[str, int]],
-        categorical_cols: list[str]
-) -> pd.DataFrame:
+def apply_label_encoders(df: pd.DataFrame, encoders: dict[str, dict[str, int]], categorical_cols: list[str]) -> pd.DataFrame:
     out = df.copy()
 
     for col in categorical_cols:
@@ -159,6 +156,89 @@ def print_encoder_summary(encoders: dict[str, dict[str, int]]):
         print(f"- {col}: {len(mapping)} categories")
 
 
+def sample_binary_df(df: pd.DataFrame, size: int, target_col: str, pos_ratio: float | None, random_state: int) -> pd.DataFrame:
+    raw_counts = df[target_col].value_counts().to_dict()
+    raw_pos_ratio = raw_counts.get(1, 0) / len(df)
+    ratio = raw_pos_ratio if pos_ratio is None else pos_ratio
+
+    n0, n1 = class_counts_from_ratio(size, ratio)
+
+    df_1 = df[df[target_col] == 1]
+    df_0 = df[df[target_col] == 0]
+
+    if len(df_1) < n1 or len(df_0) < n0:
+        raise ValueError(
+            f"Not enough rows per class. Need {{0:{n0}, 1:{n1}}}, have {{0:{len(df_0)}, 1:{len(df_1)}}}."
+        )
+
+    part_1 = df_1.sample(n=n1, random_state=random_state)
+    part_0 = df_0.sample(n=n0, random_state=random_state)
+    return pd.concat([part_0, part_1], axis=0).sample(frac=1.0, random_state=random_state)
+
+
+def sample_df(df: pd.DataFrame, size: int, random_state: int, pos_ratio=None) -> pd.DataFrame:
+    if IS_REGRESSION:
+        return random_sample(df=df, size=size, random_state=random_state)
+
+    if IS_MULTI_CLASS:
+        return stratified_sample_multiclass(df=df, size=size, target_col=TARGET_COL, random_state=random_state)
+
+    return sample_binary_df(df=df, size=size, target_col=TARGET_COL, pos_ratio=pos_ratio, random_state=random_state)
+
+
+def split_without_drift(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    train = sample_df(df=df, size=TRAIN_SIZE, random_state=RANDOM_STATE, pos_ratio=TRAIN_POS_RATIO)
+
+    train_idx = train.index
+    eligible = df.drop(index=train_idx)
+
+    print("\nEligible for test rows:", len(eligible))
+
+    if len(eligible) < TEST_SIZE:
+        raise ValueError(f"Not enough eligible rows for test. Need {TEST_SIZE}, have {len(eligible)}.")
+
+    test = sample_df(df=eligible, size=TEST_SIZE, random_state=RANDOM_STATE, pos_ratio=TEST_POS_RATIO)
+
+    overlap = len(set(train.index) & set(test.index))
+    print("\nTrain ∩ Test (by index):", overlap)
+
+    return train.reset_index(drop=True), test.reset_index(drop=True)
+
+
+def split_with_drift(df: pd.DataFrame, train_frac: float = 0.8, test_frac: float = 0.2) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not (0.0 < train_frac < 1.0):
+        raise ValueError(f"train_frac must be in (0,1), got {train_frac}")
+    if not (0.0 < test_frac < 1.0):
+        raise ValueError(f"test_frac must be in (0,1), got {test_frac}")
+    if not np.isclose(train_frac + test_frac, 1.0):
+        raise ValueError(
+            f"train_frac + test_frac must be 1.0, got {train_frac + test_frac}"
+        )
+
+    if TIME_COL is None:
+        ordered = df.reset_index(drop=True).copy()
+        print("\nHAS_DRIFT=True and TIME_COL=None -> preserving original row order.")
+    else:
+        if TIME_COL not in df.columns:
+            raise ValueError(f"TIME_COL='{TIME_COL}' not found in dataset.")
+        ordered = df.sort_values(TIME_COL, kind="stable").reset_index(drop=True).copy()
+        print(f"\nHAS_DRIFT=True -> ordering by time column '{TIME_COL}'.")
+
+    n = len(ordered)
+    train_end = int(round(n * train_frac))
+    train_end = max(1, min(train_end, n - 1))
+
+    train = ordered.iloc[:train_end].copy().reset_index(drop=True)
+    test = ordered.iloc[train_end:].copy().reset_index(drop=True)
+
+    print("\nDrift split:")
+    print("Total rows:", n)
+    print("Train rows:", len(train))
+    print("Test rows :", len(test))
+
+    return train, test
+
+
 IN_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -176,92 +256,14 @@ print("RAW cols:", df.shape[1])
 print_balance("RAW", df)
 print_regression_stats("RAW", df)
 
-cols = df.columns.tolist()
-
-if IS_REGRESSION:
-    train = random_sample(
-        df=df,
-        size=TRAIN_SIZE,
-        random_state=RANDOM_STATE
-    )
-
-elif IS_MULTI_CLASS:
-    train = stratified_sample_multiclass(
-        df=df,
-        size=TRAIN_SIZE,
-        target_col=TARGET_COL,
-        random_state=RANDOM_STATE
-    )
-
+if HAS_DRIFT:
+    train, test = split_with_drift(df)
 else:
-    df_1 = df[df[TARGET_COL] == 1]
-    df_0 = df[df[TARGET_COL] == 0]
-
-    raw_counts = df[TARGET_COL].value_counts().to_dict()
-    raw_pos_ratio = raw_counts.get(1, 0) / len(df)
-
-    train_pos_ratio = raw_pos_ratio if TRAIN_POS_RATIO is None else TRAIN_POS_RATIO
-    n0_train, n1_train = class_counts_from_ratio(TRAIN_SIZE, train_pos_ratio)
-
-    if len(df_1) < n1_train or len(df_0) < n0_train:
-        raise ValueError(
-            f"Not enough rows per class for train. "
-            f"Need {{0:{n0_train}, 1:{n1_train}}}, have {{0:{len(df_0)}, 1:{len(df_1)}}}."
-        )
-
-    train_1 = df_1.sample(n=n1_train, random_state=RANDOM_STATE)
-    train_0 = df_0.sample(n=n0_train, random_state=RANDOM_STATE)
-    train = pd.concat([train_0, train_1], axis=0).sample(frac=1.0, random_state=RANDOM_STATE)
+    train, test = split_without_drift(df)
 
 print("\nTrain rows:", len(train))
 print_balance("TRAIN", train)
 print_regression_stats("TRAIN", train)
-
-train_h = set(row_hash_series(train, cols))
-all_h = row_hash_series(df, cols)
-
-eligible_mask = ~all_h.isin(train_h)
-eligible = df[eligible_mask]
-
-print("\nEligible for test rows:", len(eligible))
-
-if len(eligible) < TEST_SIZE:
-    raise ValueError(f"Not enough eligible rows for test. Need {TEST_SIZE}, have {len(eligible)}.")
-
-if IS_REGRESSION:
-    test = random_sample(
-        df=eligible,
-        size=TEST_SIZE,
-        random_state=RANDOM_STATE
-    )
-
-elif IS_MULTI_CLASS:
-    test = stratified_sample_multiclass(
-        df=eligible,
-        size=TEST_SIZE,
-        target_col=TARGET_COL,
-        random_state=RANDOM_STATE
-    )
-
-else:
-    raw_counts = df[TARGET_COL].value_counts().to_dict()
-    raw_pos_ratio = raw_counts.get(1, 0) / len(df)
-
-    test_pos_ratio = raw_pos_ratio if TEST_POS_RATIO is None else TEST_POS_RATIO
-    n0_test, n1_test = class_counts_from_ratio(TEST_SIZE, test_pos_ratio)
-
-    eligible_1 = eligible[eligible[TARGET_COL] == 1]
-    eligible_0 = eligible[eligible[TARGET_COL] == 0]
-
-    if len(eligible_1) < n1_test or len(eligible_0) < n0_test:
-        raise ValueError(
-            f"Not enough eligible rows per class for test. "
-            f"Need {{0:{n0_test}, 1:{n1_test}}}, have {{0:{len(eligible_0)}, 1:{len(eligible_1)}}}."
-        )
-
-    test_1 = eligible_1.sample(n=n1_test, random_state=RANDOM_STATE)
-    test_0 = eligible_0.sample(n=n0_test, random_state=RANDOM_STATE)
-    test = pd.concat([test_0, test_1], axis=0).sample(frac=1.0, random_state=RANDOM_STATE)
 
 print("\nTest rows:", len(test))
 print_balance("TEST", test)
@@ -276,9 +278,6 @@ test = apply_label_encoders(test, encoders, CATEGORICAL_COLS)
 train.to_csv(OUT_TRAIN, index=False)
 test.to_csv(OUT_TEST, index=False)
 
-test_h = set(row_hash_series(test, cols))
-
-print("\nTrain ∩ Test:", len(train_h & test_h))
 print("Encoded categorical columns:", [c for c in CATEGORICAL_COLS if c in train.columns])
 print("Final train cols:", train.shape[1])
 print("Final test cols:", test.shape[1])

@@ -1,0 +1,8 @@
+{
+  "dataset" : "housing",
+  "mode" : "padme",
+  "keepRatio" : 0.3,
+  "replTtl" : 2,
+  "nodes" : 5,
+  "totalBytesSent" : 24866724
+}

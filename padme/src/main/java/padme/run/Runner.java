@@ -312,7 +312,7 @@ public final class Runner {
 
         RepresentativeSet reps = new RepresentativeSet(maxReps, new L2Distance());
         int refreshEveryItems = cfg.refreshUtilitySpan;
-        return new PadmeRetentionPolicy(maxStored, reps, refreshEveryItems, m);
+        return new PadmeRetentionPolicy(maxStored, reps, refreshEveryItems, cfg.padmeBinBalanceGamma, cfg.padmeBinBalanceMin, cfg.padmeBinBalanceMax, m);
     }
 
     private static RetentionDecision ingestOne(Node node, VectorMapper mapper, Config cfg, long key, String[] row) {

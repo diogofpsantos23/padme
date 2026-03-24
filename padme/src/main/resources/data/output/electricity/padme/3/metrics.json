@@ -1,0 +1,8 @@
+{
+  "dataset" : "electricity",
+  "mode" : "padme",
+  "keepRatio" : 0.03,
+  "replTtl" : 2,
+  "nodes" : 5,
+  "totalBytesSent" : 19910646
+}

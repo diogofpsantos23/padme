@@ -1,0 +1,8 @@
+{
+  "dataset" : "credit_card",
+  "mode" : "random",
+  "keepRatio" : 0.08,
+  "replTtl" : 2,
+  "nodes" : 5,
+  "totalBytesSent" : 94368108
+}

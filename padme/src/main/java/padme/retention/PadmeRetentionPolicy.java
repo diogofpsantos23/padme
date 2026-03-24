@@ -14,9 +14,9 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
     private static final double REP_PROMOTION_SLACK = 1.10;
     private static final double EPS = 1e-9;
 
-    private static final double BIN_BALANCE_GAMMA = 1.0;
-    private static final double BIN_BALANCE_MIN = 0.50;
-    private static final double BIN_BALANCE_MAX = 2.00;
+    private final double binBalanceGamma;
+    private final double binBalanceMin;
+    private final double binBalanceMax;
 
     private static final class RepStats {
         long load = 0L;
@@ -43,9 +43,12 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
 
     private double totalUtility = 0.0;
 
-    public PadmeRetentionPolicy(int maxStoredItems, RepresentativeSet reps, int refreshEveryItems, Metrics metrics) {
+    public PadmeRetentionPolicy(int maxStoredItems, RepresentativeSet reps, int refreshEveryItems, double binBalanceGamma, double binBalanceMin, double binBalanceMax, Metrics metrics) {
         this.reps = reps;
         this.refreshEveryItems = refreshEveryItems;
+        this.binBalanceGamma = binBalanceGamma;
+        this.binBalanceMin = binBalanceMin;
+        this.binBalanceMax = binBalanceMax;
         this.metrics = metrics;
         this.store = new HeapItemStore(Math.max(0, maxStoredItems));
     }
@@ -125,8 +128,8 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
         double novelty = d / mean;
 
         double targetLoad = Math.max(1.0, estimateUniformTargetLoad());
-        double balance = Math.pow((targetLoad + 1.0) / (load + 1.0), BIN_BALANCE_GAMMA);
-        balance = clamp(balance, BIN_BALANCE_MIN, BIN_BALANCE_MAX);
+        double balance = Math.pow((targetLoad + 1.0) / (load + 1.0), binBalanceGamma);
+        balance = clamp(balance, binBalanceMin, binBalanceMax);
 
         return novelty * balance;
     }
