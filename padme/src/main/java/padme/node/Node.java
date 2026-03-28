@@ -55,7 +55,7 @@ public final class Node {
         return d;
     }
 
-    public RetentionDecision onRemoteRecord(Record incoming) {
+    public RetentionDecision onRemoteRecord(Record incoming, int ttlRemaining) {
         if (incoming == null || incoming.meta == null) return RetentionDecision.dropped();
 
         float[] vector = incoming.meta.vector;
@@ -79,23 +79,21 @@ public final class Node {
         ItemMetadata meta = new ItemMetadata(incoming.meta.version, vector, d.admitted.utility);
         Record rec = new Record(incoming.key, incoming.item, meta);
         kv.put(incoming.key, rec);
-        enqueueForReplication(rec, replTtl);
+
+        if (ttlRemaining > 1) {
+            enqueueForReplication(rec, ttlRemaining - 1);
+        }
 
         return d;
     }
 
-    public List<Record> drainReplicationBatch(int max) {
+    public List<QueuedRecord> drainReplicationBatch(int max) {
         int n = Math.max(0, max);
-        List<Record> out = new ArrayList<>(Math.min(n, replQueue.size()));
+        List<QueuedRecord> out = new ArrayList<>(Math.min(n, replQueue.size()));
         while (n-- > 0) {
             QueuedRecord queued = replQueue.pollFirst();
             if (queued == null) break;
-            out.add(queued.record);
-
-            int nextTtl = queued.ttlRemaining - 1;
-            if (nextTtl > 0) {
-                enqueueForReplication(queued.record, nextTtl);
-            }
+            out.add(queued);
         }
         return out;
     }
@@ -133,11 +131,11 @@ public final class Node {
         return retention.totalUtility();
     }
 
-    private static final class QueuedRecord {
-        private final Record record;
-        private final int ttlRemaining;
+    public static final class QueuedRecord {
+        public final Record record;
+        public final int ttlRemaining;
 
-        private QueuedRecord(Record record, int ttlRemaining) {
+        public QueuedRecord(Record record, int ttlRemaining) {
             this.record = record;
             this.ttlRemaining = ttlRemaining;
         }

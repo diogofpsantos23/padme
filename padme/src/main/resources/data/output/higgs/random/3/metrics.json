@@ -3,6 +3,6 @@
   "mode" : "random",
   "keepRatio" : 0.03,
   "replTtl" : 2,
-  "nodes" : 5,
-  "totalBytesSent" : 41145414
+  "nodes" : 8,
+  "totalBytesSent" : 35476700
 }

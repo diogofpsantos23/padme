@@ -1,0 +1,8 @@
+{
+  "dataset" : "susy",
+  "mode" : "padme",
+  "keepRatio" : 0.03,
+  "replTtl" : 2,
+  "nodes" : 8,
+  "totalBytesSent" : 10713905
+}

@@ -1,0 +1,8 @@
+{
+  "dataset" : "covertype",
+  "mode" : "padme",
+  "keepRatio" : 0.3,
+  "replTtl" : 2,
+  "nodes" : 8,
+  "totalBytesSent" : 90778100
+}

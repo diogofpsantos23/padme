@@ -3,6 +3,6 @@
   "mode" : "padme",
   "keepRatio" : 0.3,
   "replTtl" : 2,
-  "nodes" : 5,
-  "totalBytesSent" : 181004190
+  "nodes" : 8,
+  "totalBytesSent" : 183183395
 }

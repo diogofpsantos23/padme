@@ -33,12 +33,6 @@ public final class Config {
 
   public int reportEvery = 1000;
 
-  public int distBasePort = 9000;
-  public int distCollectorPort = 9100;
-  public long distSeed = 1337L;
-  public int distGraceMs = 2000;
-  public int distMaxRounds = 100;
-
   public String[] ignoreColumns;
 
   public String vectorTransform;

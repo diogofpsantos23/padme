@@ -8,12 +8,12 @@ RAW_DIR = BASE_DIR / "raw"
 IN_DIR = BASE_DIR / "input"
 OUT_DIR = BASE_DIR / "output"
 
-RAW_PATH = RAW_DIR / "higgs.csv"
-OUT_TRAIN = IN_DIR / "higgs_train.csv"
-OUT_TEST = OUT_DIR / "higgs_test.csv"
+RAW_PATH = RAW_DIR / "susy.csv"
+OUT_TRAIN = IN_DIR / "susy_train.csv"
+OUT_TEST = OUT_DIR / "susy" /"susy_test.csv"
 
-TRAIN_SIZE = 20000
-TEST_SIZE = 4000
+TRAIN_SIZE = 10000
+TEST_SIZE = 2000
 RANDOM_STATE = 42
 TARGET_COL = "label"
 

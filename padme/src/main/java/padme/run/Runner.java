@@ -55,7 +55,7 @@ public final class Runner {
 
             Config cfg = cloneConfig(base);
             cfg.keepRatio = r;
-            cfg.maxStoredItems = computePerNodeBudget(totalRows, cfg.nodes, r);
+            cfg.maxStoredItems = computePerNodeBudget(totalRows, r);
 
             if (cfg.mode.equalsIgnoreCase("padme")) {
                 assignDerivedPadmeParams(cfg);
@@ -398,7 +398,7 @@ public final class Runner {
         int batchSize = Math.max(1, cfg.replBatchSize);
 
         for (int i = 0; i < n; i++) {
-            List<Record> batch = nodes[i].drainReplicationBatch(batchSize);
+            List<Node.QueuedRecord> batch = nodes[i].drainReplicationBatch(batchSize);
             if (batch.isEmpty()) continue;
 
             int[] peers = overlay.samplePeers(i, fanout);
@@ -406,10 +406,11 @@ public final class Runner {
                 if (p < 0 || p >= n || p == i) continue;
 
                 Metrics receiverMetrics = ms[p];
-                for (Record r : batch) {
+                for (Node.QueuedRecord qr : batch) {
+                    Record r = qr.record;
                     ms[i].totalBytesSent += computeRecordPayloadBytes(r);
 
-                    RetentionDecision d = nodes[p].onRemoteRecord(r);
+                    RetentionDecision d = nodes[p].onRemoteRecord(r, qr.ttlRemaining);
                     receiverMetrics.seen++;
                     receiverMetrics.record(d);
                 }
@@ -508,7 +509,7 @@ public final class Runner {
         return (int) Math.round(ratio * 100.0);
     }
 
-    private static int computePerNodeBudget(long totalRows, int nodes, double ratio) {
+    private static int computePerNodeBudget(long totalRows, double ratio) {
         int budget = (int) Math.ceil(totalRows * ratio);
         if (budget <= 0) budget = 1;
         return budget;
@@ -581,6 +582,10 @@ public final class Runner {
         c.maxStoredItems = src.maxStoredItems;
         c.maxRepresentatives = src.maxRepresentatives;
         c.refreshUtilitySpan = src.refreshUtilitySpan;
+
+        c.padmeBinBalanceGamma = src.padmeBinBalanceGamma;
+        c.padmeBinBalanceMax = src.padmeBinBalanceMax;
+        c.padmeBinBalanceMin = src.padmeBinBalanceMin;
 
         c.reportEvery = src.reportEvery;
 

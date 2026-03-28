@@ -9,7 +9,7 @@ import padme.store.HeapItemStore;
 import padme.store.ItemStore;
 
 public final class PadmeRetentionPolicy implements RetentionPolicy {
-    private static final int BOOTSTRAP_REPRESENTATIVES = 4;
+    private static final int BOOTSTRAP_REPRESENTATIVES = 8;
     private static final double STORE_ADMISSION_SLACK = 1.00;
     private static final double REP_PROMOTION_SLACK = 1.10;
     private static final double EPS = 1e-9;

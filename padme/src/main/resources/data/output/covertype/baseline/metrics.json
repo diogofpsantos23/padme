@@ -1,0 +1,8 @@
+{
+  "dataset" : "covertype",
+  "mode" : "baseline",
+  "keepRatio" : 0.1,
+  "replTtl" : 2,
+  "nodes" : 8,
+  "totalBytesSent" : 188624910
+}
