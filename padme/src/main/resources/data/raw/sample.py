@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import hashlib
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -8,12 +7,12 @@ RAW_DIR = BASE_DIR / "raw"
 IN_DIR = BASE_DIR / "input"
 OUT_DIR = BASE_DIR / "output"
 
-RAW_PATH = RAW_DIR / "susy.csv"
-OUT_TRAIN = IN_DIR / "susy_train.csv"
-OUT_TEST = OUT_DIR / "susy" /"susy_test.csv"
+RAW_PATH = RAW_DIR / "unsw_nb15.parquet"
+OUT_TRAIN = IN_DIR / "unsw_nb15_train.csv"
+OUT_TEST = OUT_DIR / "unsw_nb15" / "unsw_nb15_test.csv"
 
-TRAIN_SIZE = 10000
-TEST_SIZE = 2000
+TRAIN_SIZE = 20000
+TEST_SIZE = 4000
 RANDOM_STATE = 42
 TARGET_COL = "label"
 
@@ -23,10 +22,12 @@ IS_REGRESSION = False
 TRAIN_POS_RATIO = None
 TEST_POS_RATIO = None
 
-CATEGORICAL_COLS = []
+CATEGORICAL_COLS = ["state", "proto", "service", "ocean_proximity"]
 
 HAS_DRIFT = False
 TIME_COL = None
+
+ID_CANDIDATES = ["__id", "id", "ID", "Id", "key", "Key"]
 
 
 def load_df(path: Path) -> pd.DataFrame:
@@ -39,9 +40,18 @@ def load_df(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported input format: {ext} (expected .csv or .parquet)")
 
 
-def row_hash_series(df, cols):
-    s = df[cols].astype("string").fillna("").agg("|".join, axis=1)
-    return s.apply(lambda x: hashlib.sha1(x.encode("utf-8")).hexdigest())
+def ensure_global_id(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    for col in ID_CANDIDATES:
+        if col in df.columns:
+            out = df.copy()
+            if col != "__id":
+                out = out.rename(columns={col: "__id"})
+            out["__id"] = out["__id"].astype("int64")
+            return out, "__id"
+
+    out = df.copy()
+    out["__id"] = np.arange(len(out), dtype=np.int64)
+    return out, "__id"
 
 
 def print_balance(name, df):
@@ -199,8 +209,8 @@ def split_without_drift(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     test = sample_df(df=eligible, size=TEST_SIZE, random_state=RANDOM_STATE, pos_ratio=TEST_POS_RATIO)
 
-    overlap = len(set(train.index) & set(test.index))
-    print("\nTrain ∩ Test (by index):", overlap)
+    overlap = len(set(train["__id"]) & set(test["__id"]))
+    print("\nTrain ∩ Test (by __id):", overlap)
 
     return train.reset_index(drop=True), test.reset_index(drop=True)
 
@@ -211,9 +221,7 @@ def split_with_drift(df: pd.DataFrame, train_frac: float = 0.8, test_frac: float
     if not (0.0 < test_frac < 1.0):
         raise ValueError(f"test_frac must be in (0,1), got {test_frac}")
     if not np.isclose(train_frac + test_frac, 1.0):
-        raise ValueError(
-            f"train_frac + test_frac must be 1.0, got {train_frac + test_frac}"
-        )
+        raise ValueError(f"train_frac + test_frac must be 1.0, got {train_frac + test_frac}")
 
     if TIME_COL is None:
         ordered = df.reset_index(drop=True).copy()
@@ -231,6 +239,9 @@ def split_with_drift(df: pd.DataFrame, train_frac: float = 0.8, test_frac: float
     train = ordered.iloc[:train_end].copy().reset_index(drop=True)
     test = ordered.iloc[train_end:].copy().reset_index(drop=True)
 
+    overlap = len(set(train["__id"]) & set(test["__id"]))
+    print("\nTrain ∩ Test (by __id):", overlap)
+
     print("\nDrift split:")
     print("Total rows:", n)
     print("Train rows:", len(train))
@@ -241,6 +252,7 @@ def split_with_drift(df: pd.DataFrame, train_frac: float = 0.8, test_frac: float
 
 IN_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_TEST.parent.mkdir(parents=True, exist_ok=True)
 
 if IS_MULTI_CLASS and IS_REGRESSION:
     raise ValueError("IS_MULTI_CLASS and IS_REGRESSION cannot both be True.")
@@ -250,9 +262,11 @@ if not IS_MULTI_CLASS and not IS_REGRESSION:
     validate_ratio("TEST_POS_RATIO", TEST_POS_RATIO)
 
 df = load_df(RAW_PATH)
+df, id_col = ensure_global_id(df)
 
 print("RAW rows:", len(df))
 print("RAW cols:", df.shape[1])
+print("Using global id column:", id_col)
 print_balance("RAW", df)
 print_regression_stats("RAW", df)
 
@@ -281,4 +295,6 @@ test.to_csv(OUT_TEST, index=False)
 print("Encoded categorical columns:", [c for c in CATEGORICAL_COLS if c in train.columns])
 print("Final train cols:", train.shape[1])
 print("Final test cols:", test.shape[1])
+print("Train has __id:", "__id" in train.columns)
+print("Test has __id:", "__id" in test.columns)
 print("Done.")

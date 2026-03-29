@@ -12,12 +12,12 @@ public final class Config {
 
   public int nodes = 1;
 
-  public int pssViewSize = 4;
-  public int pssShuffleLength = 4;
+  public Integer pssViewSize;
+  public Integer pssShuffleLength;
   public int pssCycleEveryItems = 50;
 
-  public int replFanout = 2;
-  public int replBatchSize = 32;
+  public Integer replFanout;
+  public int replBatchSize = 64;
   public int replCycleEveryItems = 50;
   public int replTtl = 2;
 
@@ -50,17 +50,20 @@ public final class Config {
     if (nodes <= 0)
       throw new IllegalArgumentException("config.nodes must be > 0");
 
-    if (pssViewSize <= 0)
-      throw new IllegalArgumentException("config.pssViewSize must be > 0");
+    if (nodes > 36)
+      throw new IllegalArgumentException("config.nodes must be <= 36");
 
-    if (pssShuffleLength <= 0)
-      throw new IllegalArgumentException("config.pssShuffleLength must be > 0");
+    if (pssViewSize != null && pssViewSize <= 0)
+      throw new IllegalArgumentException("config.pssViewSize must be > 0 when provided");
+
+    if (pssShuffleLength != null && pssShuffleLength <= 0)
+      throw new IllegalArgumentException("config.pssShuffleLength must be > 0 when provided");
 
     if (pssCycleEveryItems <= 0)
       throw new IllegalArgumentException("config.pssCycleEveryItems must be > 0");
 
-    if (replFanout <= 0)
-      throw new IllegalArgumentException("config.replFanout must be > 0");
+    if (replFanout != null && replFanout <= 0)
+      throw new IllegalArgumentException("config.replFanout must be > 0 when provided");
 
     if (replBatchSize <= 0)
       throw new IllegalArgumentException("config.replBatchSize must be > 0");

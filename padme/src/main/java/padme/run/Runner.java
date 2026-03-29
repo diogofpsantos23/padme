@@ -33,6 +33,8 @@ public final class Runner {
     private Runner() {}
 
     public static void run(Config cfg) {
+        assignDerivedOverlayParams(cfg);
+
         if (cfg.dataKeepRatios != null && !cfg.dataKeepRatios.isEmpty() &&
                 (cfg.mode.equalsIgnoreCase("padme") || cfg.mode.equalsIgnoreCase("random"))) {
             runSweep(cfg);
@@ -42,6 +44,8 @@ public final class Runner {
         if (cfg.mode.equalsIgnoreCase("padme")) {
             assignDerivedPadmeParams(cfg);
         }
+
+        cfg.validate();
 
         if (cfg.nodes > 1) runMultiNodeOnce(cfg, resolveOutDir(cfg, cfg.mode, null), null);
         else runSingleNodeOnce(cfg, resolveOutDir(cfg, cfg.mode, null));
@@ -56,6 +60,8 @@ public final class Runner {
             Config cfg = cloneConfig(base);
             cfg.keepRatio = r;
             cfg.maxStoredItems = computePerNodeBudget(totalRows, r);
+
+            assignDerivedOverlayParams(cfg);
 
             if (cfg.mode.equalsIgnoreCase("padme")) {
                 assignDerivedPadmeParams(cfg);
@@ -480,8 +486,7 @@ public final class Runner {
             Map<String, Object> root = new LinkedHashMap<>();
             root.put("dataset", resolveDatasetKey(cfg));
             root.put("mode", cfg.mode.trim().toLowerCase());
-            root.put("keepRatio", cfg.keepRatio);
-            root.put("replTtl", cfg.replTtl);
+            if (!cfg.mode.equals("baseline")) root.put("keepRatio", cfg.keepRatio);
             root.put("nodes", cfg.nodes);
             root.put("totalBytesSent", totalBytesSent);
 
@@ -556,6 +561,43 @@ public final class Runner {
                 cfg.maxRepresentatives = Math.max(1, cfg.maxStoredItems - 1);
             }
         }
+    }
+
+    private static void assignDerivedOverlayParams(Config cfg) {
+        int n = Math.max(1, cfg.nodes);
+        int maxPeers = Math.max(1, n - 1);
+        int logN = ceilLog2(n);
+
+        if (cfg.pssViewSize == null || cfg.pssViewSize <= 0) {
+            int derivedView = Math.max(4, (int) Math.ceil(Math.sqrt(n) * logN));
+            cfg.pssViewSize = Math.min(maxPeers, derivedView);
+        } else {
+            cfg.pssViewSize = Math.min(cfg.pssViewSize, maxPeers);
+        }
+
+        if (cfg.pssShuffleLength == null || cfg.pssShuffleLength <= 0) {
+            cfg.pssShuffleLength = cfg.pssViewSize;
+        } else {
+            cfg.pssShuffleLength = Math.min(cfg.pssShuffleLength, cfg.pssViewSize);
+        }
+
+        if (cfg.replFanout == null || cfg.replFanout <= 0) {
+            int derivedFanout = Math.max(2, (int) Math.ceil(Math.sqrt(n) * Math.sqrt(logN)));
+            cfg.replFanout = Math.min(maxPeers, derivedFanout);
+        } else {
+            cfg.replFanout = Math.min(cfg.replFanout, maxPeers);
+        }
+    }
+
+    private static int ceilLog2(int x) {
+        if (x <= 1) return 1;
+        int v = x - 1;
+        int log = 0;
+        while (v > 0) {
+            v >>= 1;
+            log++;
+        }
+        return log;
     }
 
     private static Config cloneConfig(Config src) {
