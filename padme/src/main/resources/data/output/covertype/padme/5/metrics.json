@@ -2,7 +2,6 @@
   "dataset" : "covertype",
   "mode" : "padme",
   "keepRatio" : 0.05,
-  "replTtl" : 2,
-  "nodes" : 8,
-  "totalBytesSent" : 22447375
+  "nodes" : 5,
+  "totalBytesSent" : 341869372
 }

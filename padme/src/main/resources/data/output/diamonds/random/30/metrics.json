@@ -2,7 +2,6 @@
   "dataset" : "diamonds",
   "mode" : "random",
   "keepRatio" : 0.3,
-  "replTtl" : 2,
   "nodes" : 8,
-  "totalBytesSent" : 32544260
+  "totalBytesSent" : 42220705
 }

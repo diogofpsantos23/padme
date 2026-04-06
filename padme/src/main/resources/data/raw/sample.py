@@ -7,22 +7,22 @@ RAW_DIR = BASE_DIR / "raw"
 IN_DIR = BASE_DIR / "input"
 OUT_DIR = BASE_DIR / "output"
 
-RAW_PATH = RAW_DIR / "unsw_nb15.parquet"
-OUT_TRAIN = IN_DIR / "unsw_nb15_train.csv"
-OUT_TEST = OUT_DIR / "unsw_nb15" / "unsw_nb15_test.csv"
+RAW_PATH = RAW_DIR / "covertype.csv"
+OUT_TRAIN = IN_DIR / "covertype_train.csv"
+OUT_TEST = OUT_DIR / "covertype" / "covertype_test.csv"
 
-TRAIN_SIZE = 20000
-TEST_SIZE = 4000
+TRAIN_SIZE = 464810
+TEST_SIZE = 116202
 RANDOM_STATE = 42
 TARGET_COL = "label"
 
-IS_MULTI_CLASS = False
+IS_MULTI_CLASS = True
 IS_REGRESSION = False
 
 TRAIN_POS_RATIO = None
 TEST_POS_RATIO = None
 
-CATEGORICAL_COLS = ["state", "proto", "service", "ocean_proximity"]
+CATEGORICAL_COLS = ["state", "proto", "service", "ocean_proximity", "type"]
 
 HAS_DRIFT = False
 TIME_COL = None

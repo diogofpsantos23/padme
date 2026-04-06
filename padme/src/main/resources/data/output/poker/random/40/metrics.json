@@ -1,0 +1,7 @@
+{
+  "dataset" : "poker",
+  "mode" : "random",
+  "keepRatio" : 0.4,
+  "nodes" : 8,
+  "totalBytesSent" : 852598795
+}

@@ -1,0 +1,7 @@
+{
+  "dataset" : "diabetes",
+  "mode" : "random",
+  "keepRatio" : 0.02,
+  "nodes" : 8,
+  "totalBytesSent" : 11621870
+}

@@ -22,14 +22,25 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
         long load = 0L;
         double sumDistance = 0.0;
 
-        void add(double d) {
-            if (!Double.isFinite(d)) return;
-            load++;
-            sumDistance += d;
-        }
-
         double meanDistance() {
             return load > 0 ? (sumDistance / load) : 0.0;
+        }
+    }
+
+    private static final class RepStatsDelta {
+        long loadDelta = 0L;
+        double sumDistanceDelta = 0.0;
+
+        void add(double d) {
+            if (!Double.isFinite(d)) return;
+            loadDelta++;
+            sumDistanceDelta += d;
+        }
+
+        void remove(double d) {
+            if (!Double.isFinite(d)) return;
+            loadDelta--;
+            sumDistanceDelta -= d;
         }
     }
 
@@ -134,25 +145,6 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
         return novelty * balance;
     }
 
-    private void recomputeRepStats() {
-        repStats.clear();
-
-        for (HeapEntry e : store.entries()) {
-            if (e.representative) {
-                repStats.computeIfAbsent(e.key, k -> new RepStats());
-            }
-        }
-
-        for (HeapEntry e : store.entries()) {
-            if (e.representative) continue;
-            if (e.nearestRepKey < 0L || !Double.isFinite(e.nearestDistance)) continue;
-
-            repStats
-                    .computeIfAbsent(e.nearestRepKey, k -> new RepStats())
-                    .add(Math.max(0.0, e.nearestDistance));
-        }
-    }
-
     private int nonRepresentativeCapacity() {
         return Math.max(0, store.capacity() - reps.size());
     }
@@ -202,6 +194,7 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
     private RetentionDecision admitWithFreeCapacity(HeapEntry incoming) {
         boolean becameRep = false;
         RepresentativeSet.Change repChange = RepresentativeSet.Change.none();
+        Map<Long, RepStatsDelta> repStatsDelta = new HashMap<>();
 
         if (shouldPromoteToRepresentative(incoming)) {
             repChange = reps.maybeUpdate(incoming.key, incoming.vector, incoming.representativeUtility);
@@ -211,28 +204,35 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
         if (becameRep) {
             incoming.representative = true;
             store.addRepresentative(incoming);
+            addToTotalUtility(incoming.utility);
+
             if (repChange.removedRepKey >= 0L) {
                 store.markNonRepresentative(repChange.removedRepKey);
                 HeapEntry demoted = store.get(repChange.removedRepKey);
                 if (demoted != null) {
+                    double oldUtility = demoted.utility;
                     refreshEntryFromScratch(demoted);
+                    adjustTotalUtility(oldUtility, demoted.utility);
+                    store.onEntryUpdated(demoted);
+                    recordMembershipAdd(repStatsDelta, demoted);
                 }
             }
         } else {
             store.addNonRepresentative(incoming);
+            addToTotalUtility(incoming.utility);
+            recordMembershipAdd(repStatsDelta, incoming);
         }
 
         admittedSinceStart++;
-        applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey);
+        applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey, repStatsDelta);
         refreshRepresentatives(repChange);
-        recomputeRepStats();
+        applyRepStatsDelta(repStatsDelta, repChange.removedRepKey, repChange.addedRepKey);
 
         if (metrics != null) {
             metrics.winRecordAdmitted(incoming.utility);
             if (repChange.membershipChanged) metrics.winRecordRepReplaced();
         }
 
-        recomputeTotalUtility();
         return RetentionDecision.admitted(incoming);
     }
 
@@ -247,8 +247,16 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
                 return RetentionDecision.dropped();
             }
 
+            Map<Long, RepStatsDelta> repStatsDelta = new HashMap<>();
             HeapEntry out = store.evictWorstNonRepresentative();
+            if (out != null) {
+                removeFromTotalUtility(out.utility);
+                recordMembershipRemove(repStatsDelta, out);
+            }
+
             store.addNonRepresentative(incoming);
+            addToTotalUtility(incoming.utility);
+            recordMembershipAdd(repStatsDelta, incoming);
 
             if (metrics != null) {
                 metrics.winRecordEvicted();
@@ -256,8 +264,7 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
             }
 
             admittedSinceStart++;
-            recomputeRepStats();
-            recomputeTotalUtility();
+            applyRepStatsDelta(repStatsDelta, -1L, -1L);
             return RetentionDecision.evictedAndAdmitted(out, incoming);
         }
 
@@ -266,6 +273,7 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
             return RetentionDecision.dropped();
         }
 
+        Map<Long, RepStatsDelta> repStatsDelta = new HashMap<>();
         RepresentativeSet.Change repChange = reps.maybeUpdate(incoming.key, incoming.vector, incoming.representativeUtility);
         boolean becameRep = repChange.changed && (repChange.addedRepKey == incoming.key || repChange.updatedRepKey == incoming.key);
 
@@ -276,7 +284,14 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
             }
 
             HeapEntry out = store.evictWorstNonRepresentative();
+            if (out != null) {
+                removeFromTotalUtility(out.utility);
+                recordMembershipRemove(repStatsDelta, out);
+            }
+
             store.addNonRepresentative(incoming);
+            addToTotalUtility(incoming.utility);
+            recordMembershipAdd(repStatsDelta, incoming);
 
             if (metrics != null) {
                 metrics.winRecordEvicted();
@@ -284,20 +299,24 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
             }
 
             admittedSinceStart++;
-            recomputeRepStats();
-            recomputeTotalUtility();
+            applyRepStatsDelta(repStatsDelta, -1L, -1L);
             return RetentionDecision.evictedAndAdmitted(out, incoming);
         }
 
         incoming.representative = true;
         store.addRepresentative(incoming);
+        addToTotalUtility(incoming.utility);
 
         long demotedRepKey = repChange.removedRepKey;
         if (demotedRepKey >= 0L) {
             store.markNonRepresentative(demotedRepKey);
             HeapEntry demoted = store.get(demotedRepKey);
             if (demoted != null) {
+                double oldUtility = demoted.utility;
                 refreshEntryFromScratch(demoted);
+                adjustTotalUtility(oldUtility, demoted.utility);
+                store.onEntryUpdated(demoted);
+                recordMembershipAdd(repStatsDelta, demoted);
             }
         }
 
@@ -305,19 +324,21 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
         if (out == null) {
             out = store.evictWorstNonRepresentative();
         }
+        if (out != null) {
+            removeFromTotalUtility(out.utility);
+            recordMembershipRemove(repStatsDelta, out);
+        }
 
         admittedSinceStart++;
-        applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey);
+        applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey, repStatsDelta);
         refreshRepresentatives(repChange);
-        recomputeRepStats();
+        applyRepStatsDelta(repStatsDelta, repChange.removedRepKey, repChange.addedRepKey);
 
         if (metrics != null) {
             if (out != null) metrics.winRecordEvicted();
             metrics.winRecordAdmitted(incoming.utility);
             if (repChange.membershipChanged) metrics.winRecordRepReplaced();
         }
-
-        recomputeTotalUtility();
 
         if (out == null) {
             return RetentionDecision.admitted(incoming);
@@ -326,19 +347,17 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
     }
 
     private boolean hasEvictableNonRepresentative() {
-        for (HeapEntry e : store.nonRepresentativeEntries()) {
-            return true;
-        }
-        return false;
+        return store.hasNonRepresentative();
     }
 
-    private void applyRepChanges(long removedRepKey, long addedRepKey, long updatedRepKey) {
+    private void applyRepChanges(long removedRepKey, long addedRepKey, long updatedRepKey, Map<Long, RepStatsDelta> repStatsDelta) {
         if (store.size() == 0) return;
         if (removedRepKey < 0L && addedRepKey < 0L && updatedRepKey < 0L) return;
 
-        boolean touched = false;
-
         for (HeapEntry e : store.nonRepresentativeEntries()) {
+            long oldNearestRepKey = e.nearestRepKey;
+            double oldNearestDistance = e.nearestDistance;
+            double oldUtility = e.utility;
             boolean changed = false;
 
             if (removedRepKey >= 0L) {
@@ -389,12 +408,10 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
 
             if (changed) {
                 e.representativeUtility = RepresentativeSet.computeRepresentativeUtility(e.nearestDistance, e.secondNearestDistance);
-                touched = true;
+                adjustTotalUtility(oldUtility, e.utility);
+                recordMembershipTransition(repStatsDelta, oldNearestRepKey, oldNearestDistance, e.nearestRepKey, e.nearestDistance);
+                store.onEntryUpdated(e);
             }
-        }
-
-        if (touched) {
-            store.rebuildHeap();
         }
     }
 
@@ -408,14 +425,89 @@ public final class PadmeRetentionPolicy implements RetentionPolicy {
         e.representativeUtility = RepresentativeSet.computeRepresentativeUtility(s.nearestUtility(), s.secondNearestUtility());
     }
 
-    private void recomputeTotalUtility() {
-        double sum = 0.0;
-        for (HeapEntry e : store.entries()) {
-            if (Double.isFinite(e.utility)) {
-                sum += e.utility;
+    private void applyRepStatsDelta(Map<Long, RepStatsDelta> deltas, long removedRepKey, long addedRepKey) {
+        if (removedRepKey >= 0L) {
+            repStats.remove(removedRepKey);
+        }
+
+        if (addedRepKey >= 0L) {
+            repStats.computeIfAbsent(addedRepKey, k -> new RepStats());
+        }
+
+        for (Map.Entry<Long, RepStatsDelta> entry : deltas.entrySet()) {
+            long repKey = entry.getKey();
+            if (repKey < 0L || repKey == removedRepKey) {
+                continue;
+            }
+
+            RepStats stats = repStats.computeIfAbsent(repKey, k -> new RepStats());
+            RepStatsDelta delta = entry.getValue();
+
+            stats.load += delta.loadDelta;
+            stats.sumDistance += delta.sumDistanceDelta;
+
+            if (stats.load <= 0L) {
+                stats.load = 0L;
+                stats.sumDistance = 0.0;
+            } else if (stats.sumDistance < 0.0 && stats.sumDistance > -EPS) {
+                stats.sumDistance = 0.0;
             }
         }
-        totalUtility = sum;
+    }
+
+    private void recordMembershipAdd(Map<Long, RepStatsDelta> deltas, HeapEntry e) {
+        if (e == null || e.representative) return;
+        recordMembershipAdd(deltas, e.nearestRepKey, e.nearestDistance);
+    }
+
+    private void recordMembershipRemove(Map<Long, RepStatsDelta> deltas, HeapEntry e) {
+        if (e == null || e.representative) return;
+        recordMembershipRemove(deltas, e.nearestRepKey, e.nearestDistance);
+    }
+
+    private void recordMembershipTransition(Map<Long, RepStatsDelta> deltas, long oldRepKey, double oldDistance, long newRepKey, double newDistance) {
+        boolean oldValid = isValidMembership(oldRepKey, oldDistance);
+        boolean newValid = isValidMembership(newRepKey, newDistance);
+
+        if (!oldValid && !newValid) return;
+        if (oldValid && newValid && oldRepKey == newRepKey && oldDistance == newDistance) return;
+
+        if (oldValid) {
+            recordMembershipRemove(deltas, oldRepKey, oldDistance);
+        }
+        if (newValid) {
+            recordMembershipAdd(deltas, newRepKey, newDistance);
+        }
+    }
+
+    private void recordMembershipAdd(Map<Long, RepStatsDelta> deltas, long repKey, double distance) {
+        if (!isValidMembership(repKey, distance)) return;
+        deltas.computeIfAbsent(repKey, k -> new RepStatsDelta()).add(Math.max(0.0, distance));
+    }
+
+    private void recordMembershipRemove(Map<Long, RepStatsDelta> deltas, long repKey, double distance) {
+        if (!isValidMembership(repKey, distance)) return;
+        deltas.computeIfAbsent(repKey, k -> new RepStatsDelta()).remove(Math.max(0.0, distance));
+    }
+
+    private static boolean isValidMembership(long repKey, double distance) {
+        return repKey >= 0L && Double.isFinite(distance);
+    }
+
+    private void addToTotalUtility(double utility) {
+        totalUtility += utilityContribution(utility);
+    }
+
+    private void removeFromTotalUtility(double utility) {
+        totalUtility -= utilityContribution(utility);
+    }
+
+    private void adjustTotalUtility(double oldUtility, double newUtility) {
+        totalUtility += utilityContribution(newUtility) - utilityContribution(oldUtility);
+    }
+
+    private static double utilityContribution(double utility) {
+        return Double.isFinite(utility) ? utility : 0.0;
     }
 
     @Override

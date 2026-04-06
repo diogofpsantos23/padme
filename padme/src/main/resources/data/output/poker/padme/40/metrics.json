@@ -1,0 +1,7 @@
+{
+  "dataset" : "poker",
+  "mode" : "padme",
+  "keepRatio" : 0.4,
+  "nodes" : 8,
+  "totalBytesSent" : 744225765
+}

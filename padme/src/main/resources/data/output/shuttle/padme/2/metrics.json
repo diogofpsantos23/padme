@@ -2,7 +2,6 @@
   "dataset" : "shuttle",
   "mode" : "padme",
   "keepRatio" : 0.02,
-  "replTtl" : 2,
   "nodes" : 8,
-  "totalBytesSent" : 3990510
+  "totalBytesSent" : 4529065
 }

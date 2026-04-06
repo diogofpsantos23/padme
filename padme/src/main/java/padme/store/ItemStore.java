@@ -13,6 +13,8 @@ public interface ItemStore {
   boolean isRepresentative(long key);
   void markRepresentative(long key);
   void markNonRepresentative(long key);
+  boolean hasNonRepresentative();
+  void onEntryUpdated(HeapEntry e);
   HeapEntry evictWorst();
   HeapEntry evictWorstNonRepresentative();
   HeapEntry evictWorstNonRepresentativeExcept(long excludedKey);

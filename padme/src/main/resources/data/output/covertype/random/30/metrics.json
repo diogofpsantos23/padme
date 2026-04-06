@@ -2,7 +2,6 @@
   "dataset" : "covertype",
   "mode" : "random",
   "keepRatio" : 0.3,
-  "replTtl" : 2,
-  "nodes" : 8,
-  "totalBytesSent" : 106498035
+  "nodes" : 5,
+  "totalBytesSent" : 1641915800
 }

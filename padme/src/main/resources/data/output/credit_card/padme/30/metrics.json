@@ -2,7 +2,6 @@
   "dataset" : "credit_card",
   "mode" : "padme",
   "keepRatio" : 0.3,
-  "replTtl" : 2,
   "nodes" : 8,
-  "totalBytesSent" : 187803200
+  "totalBytesSent" : 1823999725
 }

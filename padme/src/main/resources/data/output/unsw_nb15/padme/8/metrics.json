@@ -2,7 +2,6 @@
   "dataset" : "unsw_nb15",
   "mode" : "padme",
   "keepRatio" : 0.08,
-  "replTtl" : 2,
-  "nodes" : 8,
-  "totalBytesSent" : 30113015
+  "nodes" : 5,
+  "totalBytesSent" : 210949288
 }

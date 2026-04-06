@@ -14,6 +14,7 @@ public final class HeapEntry {
   public long secondNearestRepKey;
 
   public boolean representative;
+  public int heapIndex = -1;
 
   public HeapEntry(long key, double utility) {
     this(key, null, utility, utility, Double.POSITIVE_INFINITY, -1L, Double.POSITIVE_INFINITY, -1L, false);

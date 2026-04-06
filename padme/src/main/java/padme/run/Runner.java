@@ -434,10 +434,6 @@ public final class Runner {
         if (r.meta != null) {
             bytes += Long.BYTES;
             bytes += Double.BYTES;
-
-            if (r.meta.vector != null) {
-                bytes += (long) r.meta.vector.length * Float.BYTES;
-            }
         }
 
         if (r.item != null && r.item.fields != null) {

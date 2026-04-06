@@ -1,0 +1,7 @@
+{
+  "dataset" : "diabetes",
+  "mode" : "padme",
+  "keepRatio" : 0.04,
+  "nodes" : 8,
+  "totalBytesSent" : 15947075
+}

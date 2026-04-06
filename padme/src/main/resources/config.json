@@ -1,12 +1,12 @@
 {
-  "path": "data/input/susy_train.csv",
-  "mode": "baseline",
+  "path": "data/input/poker_train.csv",
+  "mode": "padme",
   "nodes": 8,
   "padmeBinBalanceGamma": 0.3,
   "padmeBinBalanceMin": 0.8,
   "padmeBinBalanceMax": 1.2,
-  "vectorTransform": "log_robust",
-  "dataKeepRatios": [0.01, 0.02, 0.03, 0.04, 0.05, 0.08, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80],
-  "reportEvery": 1000,
-  "ignoreColumns": ["__id", "id", "price", "label", "Time", "Amount", "attack_cat"]
+  "vectorTransform": "zscore",
+  "dataKeepRatios": [0.01, 0.02, 0.03, 0.04, 0.05, 0.08, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60],
+  "reportEvery": 3000,
+  "ignoreColumns": ["__id", "id", "label", "attack_cat"]
 }
