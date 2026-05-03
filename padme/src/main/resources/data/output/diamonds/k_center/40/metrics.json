@@ -1,0 +1,8 @@
+{
+  "dataset" : "diamonds",
+  "mode" : "k_center",
+  "keepRatio" : 0.4,
+  "nodes" : 5,
+  "totalBytesSent" : 36041732,
+  "simulationTimeSeconds" : 0.9589365
+}

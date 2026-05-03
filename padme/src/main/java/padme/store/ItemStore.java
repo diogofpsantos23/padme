@@ -19,6 +19,7 @@ public interface ItemStore {
   HeapEntry evictWorstNonRepresentative();
   HeapEntry evictWorstNonRepresentativeExcept(long excludedKey);
   Iterable<HeapEntry> entries();
+  Iterable<HeapEntry> representativeEntries();
   Iterable<HeapEntry> nonRepresentativeEntries();
   void rebuildHeap();
 }

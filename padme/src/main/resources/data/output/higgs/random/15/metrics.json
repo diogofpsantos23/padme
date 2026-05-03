@@ -1,8 +1,0 @@
-{
-  "dataset" : "higgs",
-  "mode" : "random",
-  "keepRatio" : 0.15,
-  "replTtl" : 2,
-  "nodes" : 8,
-  "totalBytesSent" : 123394380
-}

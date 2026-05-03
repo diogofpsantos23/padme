@@ -1,0 +1,8 @@
+{
+  "dataset" : "poker",
+  "mode" : "graph_cut",
+  "keepRatio" : 0.04,
+  "nodes" : 5,
+  "totalBytesSent" : 88445740,
+  "simulationTimeSeconds" : 1022.2980052
+}

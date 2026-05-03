@@ -1,0 +1,8 @@
+{
+  "dataset" : "diabetes",
+  "mode" : "k_center",
+  "keepRatio" : 0.5,
+  "nodes" : 5,
+  "totalBytesSent" : 87168788,
+  "simulationTimeSeconds" : 4.0901991
+}

@@ -2,6 +2,7 @@
   "dataset" : "diamonds",
   "mode" : "random",
   "keepRatio" : 0.01,
-  "nodes" : 8,
-  "totalBytesSent" : 3177830
+  "nodes" : 5,
+  "totalBytesSent" : 2000108,
+  "simulationTimeSeconds" : 0.1976475
 }

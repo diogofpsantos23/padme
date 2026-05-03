@@ -1,0 +1,8 @@
+{
+  "dataset" : "poker",
+  "mode" : "k_center",
+  "keepRatio" : 0.15,
+  "nodes" : 5,
+  "totalBytesSent" : 311241680,
+  "simulationTimeSeconds" : 8.8734909
+}

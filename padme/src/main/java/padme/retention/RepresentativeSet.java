@@ -70,7 +70,7 @@ public final class RepresentativeSet {
       return Double.POSITIVE_INFINITY;
     }
 
-    double base = Math.log1p(Math.max(0.0, nearestDistance));
+    double base = Math.log1p(Math.max(0.5, nearestDistance));
 
     if (!Double.isFinite(secondNearestDistance) || secondNearestDistance <= 0.0) {
       return base;
@@ -80,7 +80,7 @@ public final class RepresentativeSet {
     if (ratio < 0.0) ratio = 0.0;
     if (ratio > 1.0) ratio = 1.0;
 
-    return base * (1.0 + 0.25 * ratio);
+    return base * (1.0 + 10 * ratio);
   }
 
   public int size() {
@@ -167,6 +167,10 @@ public final class RepresentativeSet {
       }
     }
     return Double.POSITIVE_INFINITY;
+  }
+
+  public double distanceBetween(float[] a, float[] b) {
+    return distance.between(a, b);
   }
 
   public Change maybeUpdate(long key, float[] x, double repUtilityOfX) {

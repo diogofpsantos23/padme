@@ -1,8 +1,0 @@
-{
-  "dataset" : "housing",
-  "mode" : "baseline",
-  "keepRatio" : 0.1,
-  "replTtl" : 2,
-  "nodes" : 8,
-  "totalBytesSent" : 55842990
-}

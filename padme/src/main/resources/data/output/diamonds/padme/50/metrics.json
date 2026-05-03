@@ -1,7 +1,0 @@
-{
-  "dataset" : "diamonds",
-  "mode" : "padme",
-  "keepRatio" : 0.5,
-  "nodes" : 8,
-  "totalBytesSent" : 52543975
-}

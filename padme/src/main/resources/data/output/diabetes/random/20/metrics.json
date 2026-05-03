@@ -2,6 +2,7 @@
   "dataset" : "diabetes",
   "mode" : "random",
   "keepRatio" : 0.2,
-  "nodes" : 8,
-  "totalBytesSent" : 67536300
+  "nodes" : 5,
+  "totalBytesSent" : 44776324,
+  "simulationTimeSeconds" : 0.3283487
 }

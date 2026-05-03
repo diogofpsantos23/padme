@@ -7,7 +7,7 @@ public final class Config {
   public String separator = ",";
   public int idColumn = -1;
 
-  public int refreshUtilitySpan = 16;
+  public int refreshUtilitySpan = 20;
   public String mode = "baseline";
 
   public int nodes = 1;
@@ -21,15 +21,16 @@ public final class Config {
   public int replCycleEveryItems = 50;
   public int replTtl = 2;
 
-  public double padmeBinBalanceGamma = 1.0;
-  public double padmeBinBalanceMin = 0.50;
-  public double padmeBinBalanceMax = 2.00;
+  public double padmeBinBalanceGamma = 0.3;
+  public double padmeBinBalanceMin = 0.8;
+  public double padmeBinBalanceMax = 1.2;
 
   public double keepRatio = 0.1;
   public List<Double> dataKeepRatios;
 
   public Integer maxStoredItems;
   public Integer maxRepresentatives;
+  public int nonRepSampleFactor = 10;
 
   public int reportEvery = 1000;
 
@@ -108,9 +109,35 @@ public final class Config {
     }
     vectorTransform = vt;
 
-    if (mode.equalsIgnoreCase("padme")) {
+    String m = mode.trim().toLowerCase();
+    m = switch (m) {
+      case "graphcut", "graph_cut" -> "graph_cut";
+      case "maxdiversity", "max_diversity" -> "max_diversity";
+      case "kcenter", "k_center" -> "k_center";
+      case "baseline", "random", "padme" -> m;
+      default -> m;
+    };
+
+    if (!m.equals("baseline") &&
+            !m.equals("random") &&
+            !m.equals("padme") &&
+            !m.equals("graph_cut") &&
+            !m.equals("max_diversity") &&
+            !m.equals("k_center")) {
+      throw new IllegalArgumentException("config.mode must be one of: baseline, random, padme, graph_cut, max_diversity, k_center");
+    }
+    mode = m;
+
+    if (mode.equals("padme") ||
+            mode.equals("graph_cut") ||
+            mode.equals("max_diversity") ||
+            mode.equals("k_center")) {
+
       if (maxStoredItems != null && maxStoredItems <= 0)
-        throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=padme");
+        throw new IllegalArgumentException("config.maxStoredItems must be > 0 when mode=" + mode);
+
+      if (nonRepSampleFactor < 1 && !mode.equals("k_center"))
+        throw new IllegalArgumentException("config.nonRepSampleFactor must be > 1 when mode=" + mode);
 
       if (maxRepresentatives != null && maxRepresentatives <= 0)
         throw new IllegalArgumentException("config.maxRepresentatives must be > 0 when provided");
@@ -119,7 +146,7 @@ public final class Config {
         throw new IllegalArgumentException("config.maxRepresentatives must be < config.maxStoredItems when provided");
 
       if (refreshUtilitySpan < 0)
-        throw new IllegalArgumentException("config.refreshUtilitySpan must be >= 0 when provided");
+        throw new IllegalArgumentException("config.refreshUtilitySpan must be >= 0 when mode=" + mode);
     }
   }
 

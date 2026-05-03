@@ -1,0 +1,8 @@
+{
+  "dataset" : "credit_card",
+  "mode" : "graph_cut",
+  "keepRatio" : 0.01,
+  "nodes" : 5,
+  "totalBytesSent" : 153608168,
+  "simulationTimeSeconds" : 70.8242412
+}

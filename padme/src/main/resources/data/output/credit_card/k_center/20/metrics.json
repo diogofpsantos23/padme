@@ -1,0 +1,8 @@
+{
+  "dataset" : "credit_card",
+  "mode" : "k_center",
+  "keepRatio" : 0.2,
+  "nodes" : 5,
+  "totalBytesSent" : 1467248372,
+  "simulationTimeSeconds" : 62.552725
+}

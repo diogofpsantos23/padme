@@ -21,7 +21,8 @@ import padme.model.Record;
 import padme.node.Node;
 import padme.pss.PssOverlay;
 import padme.retention.BaselineFullRetentionPolicy;
-import padme.retention.PadmeRetentionPolicy;
+import padme.retention.GraphCutRetentionPolicy;
+import padme.retention.KCenterRetentionPolicy;
 import padme.retention.RandomRetentionPolicy;
 import padme.retention.RepresentativeSet;
 import padme.retention.RetentionDecision;
@@ -35,20 +36,26 @@ public final class Runner {
     public static void run(Config cfg) {
         assignDerivedOverlayParams(cfg);
 
+        String mode = normalizeMode(cfg.mode);
+
         if (cfg.dataKeepRatios != null && !cfg.dataKeepRatios.isEmpty() &&
-                (cfg.mode.equalsIgnoreCase("padme") || cfg.mode.equalsIgnoreCase("random"))) {
+                (mode.equals("padme")
+                        || mode.equals("random")
+                        || mode.equals("graph_cut")
+                        || mode.equals("max_diversity")
+                        || mode.equals("k_center"))) {
             runSweep(cfg);
             return;
         }
 
-        if (cfg.mode.equalsIgnoreCase("padme")) {
-            assignDerivedPadmeParams(cfg);
+        if (usesRepresentatives(mode)) {
+            assignDerivedRepresentativeParams(cfg);
         }
 
         cfg.validate();
 
-        if (cfg.nodes > 1) runMultiNodeOnce(cfg, resolveOutDir(cfg, cfg.mode, null), null);
-        else runSingleNodeOnce(cfg, resolveOutDir(cfg, cfg.mode, null));
+        if (cfg.nodes > 1) runMultiNodeOnce(cfg, resolveOutDir(cfg, mode, null), null);
+        else runSingleNodeOnce(cfg, resolveOutDir(cfg, mode, null));
     }
 
     private static void runSweep(Config base) {
@@ -63,13 +70,13 @@ public final class Runner {
 
             assignDerivedOverlayParams(cfg);
 
-            if (cfg.mode.equalsIgnoreCase("padme")) {
-                assignDerivedPadmeParams(cfg);
+            if (usesRepresentatives(normalizeMode(cfg.mode))) {
+                assignDerivedRepresentativeParams(cfg);
             }
 
             cfg.validate();
 
-            Path outDir = resolveOutDir(cfg, cfg.mode, ratioInt);
+            Path outDir = resolveOutDir(cfg, normalizeMode(cfg.mode), ratioInt);
             runMultiNodeOnce(cfg, outDir, ratioInt);
         }
     }
@@ -105,14 +112,17 @@ public final class Runner {
             throw new RuntimeException("Ingest failed while reading: " + cfg.path, e);
         }
 
+        long elapsedNs = System.nanoTime() - startNs;
+        double elapsedSeconds = elapsedNs / 1_000_000_000.0;
+
         System.out.println("DONE: " + cfg);
         System.out.printf(
-                "Final: seen=%d stored=%d admitted=%d dropped=%d evicted=%d utilitySum=%.1f mode=%s%n",
-                m.seen, node0.storedCount(), m.admitted, m.dropped, m.evicted, node0.totalUtility(), cfg.mode
+                "Final: seen=%d stored=%d admitted=%d dropped=%d evicted=%d utilitySum=%.1f mode=%s simTime=%.3fs%n",
+                m.seen, node0.storedCount(), m.admitted, m.dropped, m.evicted, node0.totalUtility(), normalizeMode(cfg.mode), elapsedSeconds
         );
 
         writeOutputsSingle(cfg, outDir, header, node0);
-        writeMetricsJson(cfg, outDir, m.totalBytesSent);
+        writeMetricsJson(cfg, outDir, m.totalBytesSent, elapsedNs, elapsedSeconds);
     }
 
     private static void runMultiNodeOnce(Config cfg, Path outDir, Integer ratioInt) {
@@ -147,11 +157,14 @@ public final class Runner {
             throw new RuntimeException("Ingest failed while reading: " + cfg.path, e);
         }
 
+        long elapsedNs = System.nanoTime() - startNs;
+        double elapsedSeconds = elapsedNs / 1_000_000_000.0;
+
         printFinalMulti(cfg, nodes, ms);
         printFinalPerNode(cfg, nodes, ms);
 
         writeOutputsMulti(cfg, outDir, header, nodes);
-        writeMetricsJson(cfg, outDir, totalBytesSent(ms));
+        writeMetricsJson(cfg, outDir, totalBytesSent(ms), elapsedNs, elapsedSeconds);
 
         if (ratioInt != null) System.out.println("Wrote outputs: " + outDir.toAbsolutePath());
     }
@@ -186,11 +199,16 @@ public final class Runner {
             double repsMinU = 0.0;
             double repsMeanU = 0.0;
 
-            if (policy instanceof PadmeRetentionPolicy p) {
-                uMinStore = p.minUtilityStored();
+            if (policy instanceof GraphCutRetentionPolicy p) {
                 repsSize = p.representativeCount();
                 repsMinU = p.repsMinUtility();
                 repsMeanU = p.repsMeanUtility();
+                uMinStore = p.minUtilityStored();
+            } else if (policy instanceof KCenterRetentionPolicy p) {
+                repsSize = p.representativeCount();
+                repsMinU = p.repsMinUtility();
+                repsMeanU = p.repsMeanUtility();
+                uMinStore = p.minUtilityStored();
             }
 
             long elapsedNs = System.nanoTime() - startNs;
@@ -292,11 +310,13 @@ public final class Runner {
     }
 
     private static RetentionPolicy createPolicy(Config cfg, Metrics m, int nodeId) {
-        if (cfg.mode.equalsIgnoreCase("baseline")) {
+        String mode = normalizeMode(cfg.mode);
+
+        if (mode.equals("baseline")) {
             return new BaselineFullRetentionPolicy();
         }
 
-        if (cfg.mode.equalsIgnoreCase("random")) {
+        if (mode.equals("random")) {
             long seed = 1337L ^ (((long) nodeId + 1L) * 0x9E3779B97F4A7C15L);
             return new RandomRetentionPolicy(cfg.maxStoredItems, seed);
         }
@@ -305,11 +325,11 @@ public final class Runner {
         int maxReps = cfg.maxRepresentatives;
 
         if (maxStored <= 0) {
-            throw new IllegalArgumentException("maxStoredItems must be > 0 for padme");
+            throw new IllegalArgumentException("maxStoredItems must be > 0 for mode=" + mode);
         }
 
         if (maxReps <= 0) {
-            throw new IllegalArgumentException("maxRepresentatives must be > 0 for padme");
+            throw new IllegalArgumentException("maxRepresentatives must be > 0 for mode=" + mode);
         }
 
         if (maxReps >= maxStored) {
@@ -318,7 +338,28 @@ public final class Runner {
 
         RepresentativeSet reps = new RepresentativeSet(maxReps, new L2Distance());
         int refreshEveryItems = cfg.refreshUtilitySpan;
-        return new PadmeRetentionPolicy(maxStored, reps, refreshEveryItems, cfg.padmeBinBalanceGamma, cfg.padmeBinBalanceMin, cfg.padmeBinBalanceMax, m);
+
+        if (mode.equals("graph_cut")) {
+            return new GraphCutRetentionPolicy(
+                    maxStored,
+                    reps,
+                    refreshEveryItems,
+                    2.0,
+                    cfg.nonRepSampleFactor,
+                    m
+            );
+        }
+
+        if (mode.equals("k_center")) {
+            return new KCenterRetentionPolicy(
+                    maxStored,
+                    reps,
+                    refreshEveryItems,
+                    m
+            );
+        }
+
+        throw new IllegalArgumentException("Unsupported mode: " + cfg.mode);
     }
 
     private static RetentionDecision ingestOne(Node node, VectorMapper mapper, Config cfg, long key, String[] row) {
@@ -355,7 +396,7 @@ public final class Runner {
 
         System.out.printf(
                 "Progress: rows=%d storedTotal=%d bytesTotal=%d utilityTotal=%.1f replQ=%d elapsed=%.2fs nodes=%d mode=%s%n%n",
-                rowsRead, storedTotal, bytesTotal, utilityTotal, totalReplQueueSize(nodes), elapsedNs / 1e9, nodes.length, cfg.mode
+                rowsRead, storedTotal, bytesTotal, utilityTotal, totalReplQueueSize(nodes), elapsedNs / 1e9, nodes.length, normalizeMode(cfg.mode)
         );
 
         printPerNodeProgress(nodes, ms, elapsedNs);
@@ -382,7 +423,7 @@ public final class Runner {
         System.out.println("DONE: " + cfg);
         System.out.printf(
                 "Final (multi): seen=%d storedTotal=%d admitted=%d dropped=%d evicted=%d utilitySum=%.1f nodes=%d mode=%s%n",
-                seen, stored, admitted, dropped, evicted, util, nodes.length, cfg.mode
+                seen, stored, admitted, dropped, evicted, util, nodes.length, normalizeMode(cfg.mode)
         );
     }
 
@@ -393,7 +434,7 @@ public final class Runner {
             Metrics m = ms[i];
             System.out.printf(
                     "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f replQ=%d mode=%s%n",
-                    i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), nd.replicationQueueSize(), cfg.mode
+                    i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), nd.replicationQueueSize(), normalizeMode(cfg.mode)
             );
         }
     }
@@ -448,7 +489,7 @@ public final class Runner {
     }
 
     private static void writeOutputsSingle(Config cfg, Path outDir, String[] header, Node node0) {
-        String prefix = cfg.mode.trim().toLowerCase();
+        String prefix = normalizeMode(cfg.mode);
         Path outNode = outDir.resolve(prefix + "_node0.csv");
 
         try {
@@ -460,7 +501,7 @@ public final class Runner {
     }
 
     private static void writeOutputsMulti(Config cfg, Path outDir, String[] header, Node[] nodes) {
-        String prefix = cfg.mode.trim().toLowerCase();
+        String prefix = normalizeMode(cfg.mode);
 
         try {
             for (int i = 0; i < nodes.length; i++) {
@@ -473,7 +514,7 @@ public final class Runner {
         }
     }
 
-    private static void writeMetricsJson(Config cfg, Path outDir, long totalBytesSent) {
+    private static void writeMetricsJson(Config cfg, Path outDir, long totalBytesSent, long simulationTimeNs, double simulationTimeSeconds) {
         try {
             java.nio.file.Files.createDirectories(outDir);
 
@@ -481,10 +522,11 @@ public final class Runner {
 
             Map<String, Object> root = new LinkedHashMap<>();
             root.put("dataset", resolveDatasetKey(cfg));
-            root.put("mode", cfg.mode.trim().toLowerCase());
-            if (!cfg.mode.equals("baseline")) root.put("keepRatio", cfg.keepRatio);
+            root.put("mode", normalizeMode(cfg.mode));
+            if (!normalizeMode(cfg.mode).equals("baseline")) root.put("keepRatio", cfg.keepRatio);
             root.put("nodes", cfg.nodes);
             root.put("totalBytesSent", totalBytesSent);
+            root.put("simulationTimeSeconds", simulationTimeSeconds);
 
             Path out = outDir.resolve("metrics.json");
             om.writerWithDefaultPrettyPrinter().writeValue(out.toFile(), root);
@@ -517,7 +559,7 @@ public final class Runner {
     }
 
     private static Path resolveOutDir(Config cfg, String mode, Integer ratioInt) {
-        String m = (mode == null || mode.isBlank()) ? "padme" : mode.trim().toLowerCase();
+        String m = normalizeMode(mode);
         Path base = resolveDatasetOutRoot(cfg).resolve(m);
         if (ratioInt == null) return base;
         return base.resolve(Integer.toString(ratioInt));
@@ -544,7 +586,7 @@ public final class Runner {
         };
     }
 
-    private static void assignDerivedPadmeParams(Config cfg) {
+    private static void assignDerivedRepresentativeParams(Config cfg) {
         if (cfg.maxStoredItems != null && cfg.maxStoredItems > 0) {
             if (cfg.maxRepresentatives == null || cfg.maxRepresentatives <= 0) {
                 int derived = (int) Math.floor(Math.sqrt(cfg.maxStoredItems));
@@ -620,6 +662,7 @@ public final class Runner {
         c.maxStoredItems = src.maxStoredItems;
         c.maxRepresentatives = src.maxRepresentatives;
         c.refreshUtilitySpan = src.refreshUtilitySpan;
+        c.nonRepSampleFactor = src.nonRepSampleFactor;
 
         c.padmeBinBalanceGamma = src.padmeBinBalanceGamma;
         c.padmeBinBalanceMax = src.padmeBinBalanceMax;
@@ -631,5 +674,25 @@ public final class Runner {
         c.vectorTransform = src.vectorTransform;
 
         return c;
+    }
+
+    private static String normalizeMode(String mode) {
+        if (mode == null || mode.isBlank()) return "padme";
+
+        String m = mode.trim().toLowerCase();
+        return switch (m) {
+            case "graphcut", "graph_cut" -> "graph_cut";
+            case "maxdiversity", "max_diversity" -> "max_diversity";
+            case "kcenter", "k_center" -> "k_center";
+            case "baseline", "random", "padme" -> m;
+            default -> m;
+        };
+    }
+
+    private static boolean usesRepresentatives(String mode) {
+        return mode.equals("padme")
+                || mode.equals("graph_cut")
+                || mode.equals("max_diversity")
+                || mode.equals("k_center");
     }
 }

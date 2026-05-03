@@ -1,0 +1,8 @@
+{
+  "dataset" : "diabetes",
+  "mode" : "graph_cut",
+  "keepRatio" : 0.03,
+  "nodes" : 5,
+  "totalBytesSent" : 16886796,
+  "simulationTimeSeconds" : 4.9267302
+}

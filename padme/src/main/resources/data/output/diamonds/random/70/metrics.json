@@ -1,0 +1,8 @@
+{
+  "dataset" : "diamonds",
+  "mode" : "random",
+  "keepRatio" : 0.7,
+  "nodes" : 5,
+  "totalBytesSent" : 46806000,
+  "simulationTimeSeconds" : 0.2489453
+}

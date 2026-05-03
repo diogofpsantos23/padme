@@ -1,0 +1,8 @@
+{
+  "dataset" : "diamonds",
+  "mode" : "graph_cut",
+  "keepRatio" : 0.9,
+  "nodes" : 5,
+  "totalBytesSent" : 49742536,
+  "simulationTimeSeconds" : 581.8370136
+}

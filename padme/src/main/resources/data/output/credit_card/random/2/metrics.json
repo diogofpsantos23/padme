@@ -2,6 +2,7 @@
   "dataset" : "credit_card",
   "mode" : "random",
   "keepRatio" : 0.02,
-  "nodes" : 8,
-  "totalBytesSent" : 255799845
+  "nodes" : 5,
+  "totalBytesSent" : 163988784,
+  "simulationTimeSeconds" : 1.4439028
 }

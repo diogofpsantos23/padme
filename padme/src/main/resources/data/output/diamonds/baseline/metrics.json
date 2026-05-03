@@ -1,6 +1,7 @@
 {
   "dataset" : "diamonds",
   "mode" : "baseline",
-  "nodes" : 8,
-  "totalBytesSent" : 76477770
+  "nodes" : 5,
+  "totalBytesSent" : 50985180,
+  "simulationTimeSeconds" : 0.4833934
 }

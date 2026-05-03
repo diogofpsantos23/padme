@@ -1,6 +1,7 @@
 {
   "dataset" : "credit_card",
   "mode" : "baseline",
-  "nodes" : 8,
-  "totalBytesSent" : 4430421960
+  "nodes" : 5,
+  "totalBytesSent" : 2406784240,
+  "simulationTimeSeconds" : 5.0535868
 }

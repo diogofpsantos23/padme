@@ -2,6 +2,7 @@
   "dataset" : "poker",
   "mode" : "random",
   "keepRatio" : 0.5,
-  "nodes" : 8,
-  "totalBytesSent" : 980645730
+  "nodes" : 5,
+  "totalBytesSent" : 654253672,
+  "simulationTimeSeconds" : 6.2735552
 }

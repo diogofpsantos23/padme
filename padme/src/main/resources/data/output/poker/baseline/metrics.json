@@ -1,6 +1,7 @@
 {
   "dataset" : "poker",
   "mode" : "baseline",
-  "nodes" : 8,
-  "totalBytesSent" : 1272816690
+  "nodes" : 5,
+  "totalBytesSent" : 848544460,
+  "simulationTimeSeconds" : 6.3859771
 }

@@ -1,7 +1,0 @@
-{
-  "dataset" : "covertype",
-  "mode" : "random",
-  "keepRatio" : 0.01,
-  "nodes" : 5,
-  "totalBytesSent" : 116339896
-}

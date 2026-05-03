@@ -190,6 +190,35 @@ public final class HeapItemStore implements ItemStore {
   }
 
   @Override
+  public Iterable<HeapEntry> representativeEntries() {
+    return () -> new Iterator<>() {
+      private final Iterator<HeapEntry> it = byKey.values().iterator();
+      private HeapEntry next = advance();
+
+      private HeapEntry advance() {
+        while (it.hasNext()) {
+          HeapEntry e = it.next();
+          if (e.representative) return e;
+        }
+        return null;
+      }
+
+      @Override
+      public boolean hasNext() {
+        return next != null;
+      }
+
+      @Override
+      public HeapEntry next() {
+        if (next == null) throw new NoSuchElementException();
+        HeapEntry current = next;
+        next = advance();
+        return current;
+      }
+    };
+  }
+
+  @Override
   public void rebuildHeap() {
     minHeap.clear();
     for (HeapEntry e : byKey.values()) {

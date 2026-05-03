@@ -1,6 +1,7 @@
 {
   "dataset" : "diabetes",
   "mode" : "baseline",
-  "nodes" : 8,
-  "totalBytesSent" : 163946670
+  "nodes" : 5,
+  "totalBytesSent" : 109297780,
+  "simulationTimeSeconds" : 0.7911595
 }
