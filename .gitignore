@@ -37,5 +37,8 @@ build/
 
 .env
 .venv
-*.csv
 venv/
+baseline/
+graph_cut/
+k_center/
+random/
