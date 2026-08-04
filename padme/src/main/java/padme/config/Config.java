@@ -19,7 +19,8 @@ public final class Config {
   public Integer replFanout;
   public int replBatchSize = 64;
   public int replCycleEveryItems = 50;
-  public int replTtl = 2;
+  public Integer replTtl;
+  public int replSeenCacheSize = 100_000;
 
   public double padmeBinBalanceGamma = 0.3;
   public double padmeBinBalanceMin = 0.8;
@@ -51,9 +52,6 @@ public final class Config {
     if (nodes <= 0)
       throw new IllegalArgumentException("config.nodes must be > 0");
 
-    if (nodes > 36)
-      throw new IllegalArgumentException("config.nodes must be <= 36");
-
     if (pssViewSize != null && pssViewSize <= 0)
       throw new IllegalArgumentException("config.pssViewSize must be > 0 when provided");
 
@@ -72,8 +70,11 @@ public final class Config {
     if (replCycleEveryItems <= 0)
       throw new IllegalArgumentException("config.replCycleEveryItems must be > 0");
 
-    if (replTtl <= 0)
-      throw new IllegalArgumentException("config.replTtl must be > 0");
+    if (replTtl != null && replTtl <= 0)
+      throw new IllegalArgumentException("config.replTtl must be > 0 when provided");
+
+    if (replSeenCacheSize <= 0)
+      throw new IllegalArgumentException("config.replSeenCacheSize must be > 0");
 
     if (padmeBinBalanceGamma < 0.0)
       throw new IllegalArgumentException("config.padmeBinBalanceGamma must be >= 0");
@@ -166,6 +167,7 @@ public final class Config {
             ", replBatchSize=" + replBatchSize +
             ", replCycleEveryItems=" + replCycleEveryItems +
             ", replTtl=" + replTtl +
+            ", replSeenCacheSize=" + replSeenCacheSize +
             ", padmeBinBalanceGamma=" + padmeBinBalanceGamma +
             ", padmeBinBalanceMin=" + padmeBinBalanceMin +
             ", padmeBinBalanceMax=" + padmeBinBalanceMax +

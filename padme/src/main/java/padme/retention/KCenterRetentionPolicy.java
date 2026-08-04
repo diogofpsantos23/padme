@@ -9,19 +9,13 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
     private static final int BOOTSTRAP_REPRESENTATIVES = 1;
     private static final double STORE_ADMISSION_SLACK = 1.00;
     private static final double REP_PROMOTION_SLACK = 1.10;
-
     private final ItemStore store;
     private final RepresentativeSet reps;
     private final Metrics metrics;
-
-    private final int refreshEveryItems;
-    private long admittedSinceStart = 0;
-
     private double totalUtility = 0.0;
 
     public KCenterRetentionPolicy(int maxStoredItems, RepresentativeSet reps, int refreshEveryItems, Metrics metrics) {
         this.reps = reps;
-        this.refreshEveryItems = refreshEveryItems;
         this.metrics = metrics;
         this.store = new HeapItemStore(Math.max(0, maxStoredItems));
     }
@@ -39,7 +33,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
         RepresentativeSet.NeighborScore score;
         double storeU;
         double repU;
-
         if (reps.isEmpty()) {
             score = new RepresentativeSet.NeighborScore(-1L, Double.POSITIVE_INFINITY, -1L, Double.POSITIVE_INFINITY);
             storeU = Double.POSITIVE_INFINITY;
@@ -48,7 +41,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
             score = reps.scoreWithSecond(key, vector);
             storeU = computeStoreUtility(score.nearestRepKey(), score.nearestUtility());
             repU = RepresentativeSet.computeRepresentativeUtility(score.nearestUtility(), score.secondNearestUtility());
-
             if (!Double.isFinite(storeU)) {
                 if (metrics != null) {
                     metrics.winRecordSeen(storeU);
@@ -59,7 +51,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
         }
 
         if (metrics != null) metrics.winRecordSeen(storeU);
-
         HeapEntry incoming = new HeapEntry(
                 key,
                 vector,
@@ -95,7 +86,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
         if (store.isRepresentative(incoming.key)) {
             return true;
         }
-
         if (!reps.isFull() && reps.size() < Math.min(BOOTSTRAP_REPRESENTATIVES, store.capacity())) {
             return true;
         }
@@ -107,17 +97,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
         return incoming.representativeUtility > (reps.minUtility() * REP_PROMOTION_SLACK);
     }
 
-    private void refreshRepresentatives(RepresentativeSet.Change repChange) {
-        if (repChange.membershipChanged || repChange.updatedRepKey >= 0L) {
-            reps.refreshUtilities();
-            return;
-        }
-
-        if (refreshEveryItems > 0 && (admittedSinceStart % refreshEveryItems == 0)) {
-            reps.refreshUtilities();
-        }
-    }
-
     private RetentionDecision admitWithFreeCapacity(HeapEntry incoming) {
         boolean becameRep = false;
         RepresentativeSet.Change repChange = RepresentativeSet.Change.none();
@@ -126,12 +105,10 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
             repChange = reps.maybeUpdate(incoming.key, incoming.vector, incoming.representativeUtility);
             becameRep = repChange.changed && (repChange.addedRepKey == incoming.key || repChange.updatedRepKey == incoming.key);
         }
-
         if (becameRep) {
             incoming.representative = true;
             store.addRepresentative(incoming);
             addToTotalUtility(incoming.utility);
-
             if (repChange.removedRepKey >= 0L) {
                 store.markNonRepresentative(repChange.removedRepKey);
                 HeapEntry demoted = store.get(repChange.removedRepKey);
@@ -147,9 +124,7 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
             addToTotalUtility(incoming.utility);
         }
 
-        admittedSinceStart++;
         applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey);
-        refreshRepresentatives(repChange);
 
         if (metrics != null) {
             metrics.winRecordAdmitted(incoming.utility);
@@ -163,7 +138,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
         double worstNonRepU = store.minNonRepresentativeUtility();
         boolean canEvictNonRep = hasEvictableNonRepresentative();
         boolean shouldBecomeRep = shouldPromoteToRepresentative(incoming);
-
         if (!shouldBecomeRep) {
             if (!canEvictNonRep || incoming.utility <= (worstNonRepU * STORE_ADMISSION_SLACK)) {
                 if (metrics != null) metrics.winRecordDropped(incoming.utility);
@@ -174,7 +148,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
             if (out != null) {
                 removeFromTotalUtility(out.utility);
             }
-
             store.addNonRepresentative(incoming);
             addToTotalUtility(incoming.utility);
 
@@ -183,10 +156,8 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
                 metrics.winRecordAdmitted(incoming.utility);
             }
 
-            admittedSinceStart++;
             return RetentionDecision.evictedAndAdmitted(out, incoming);
         }
-
         if (!canEvictNonRep) {
             if (metrics != null) metrics.winRecordDropped(incoming.utility);
             return RetentionDecision.dropped();
@@ -194,7 +165,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
 
         RepresentativeSet.Change repChange = reps.maybeUpdate(incoming.key, incoming.vector, incoming.representativeUtility);
         boolean becameRep = repChange.changed && (repChange.addedRepKey == incoming.key || repChange.updatedRepKey == incoming.key);
-
         if (!becameRep) {
             if (incoming.utility <= (worstNonRepU * STORE_ADMISSION_SLACK)) {
                 if (metrics != null) metrics.winRecordDropped(incoming.utility);
@@ -205,7 +175,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
             if (out != null) {
                 removeFromTotalUtility(out.utility);
             }
-
             store.addNonRepresentative(incoming);
             addToTotalUtility(incoming.utility);
 
@@ -214,14 +183,12 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
                 metrics.winRecordAdmitted(incoming.utility);
             }
 
-            admittedSinceStart++;
             return RetentionDecision.evictedAndAdmitted(out, incoming);
         }
 
         incoming.representative = true;
         store.addRepresentative(incoming);
         addToTotalUtility(incoming.utility);
-
         long demotedRepKey = repChange.removedRepKey;
         if (demotedRepKey >= 0L) {
             store.markNonRepresentative(demotedRepKey);
@@ -233,7 +200,6 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
                 store.onEntryUpdated(demoted);
             }
         }
-
         HeapEntry out = store.evictWorstNonRepresentativeExcept(demotedRepKey);
         if (out == null) {
             out = store.evictWorstNonRepresentative();
@@ -242,10 +208,7 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
             removeFromTotalUtility(out.utility);
         }
 
-        admittedSinceStart++;
         applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey);
-        refreshRepresentatives(repChange);
-
         if (metrics != null) {
             if (out != null) metrics.winRecordEvicted();
             metrics.winRecordAdmitted(incoming.utility);
@@ -268,29 +231,28 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
 
         for (HeapEntry e : store.nonRepresentativeEntries()) {
             double oldUtility = e.utility;
-            boolean changed = false;
+            boolean metadataChanged = false;
 
             if (removedRepKey >= 0L) {
                 if (e.nearestRepKey == removedRepKey) {
                     e.nearestRepKey = e.secondNearestRepKey;
                     e.nearestDistance = e.secondNearestDistance;
                     e.utility = computeStoreUtility(e.nearestRepKey, e.nearestDistance);
-
                     RepresentativeSet.UtilityScore replacementSecond = reps.bestExcluding(e.key, e.vector, e.nearestRepKey);
                     e.secondNearestRepKey = replacementSecond.nearestRepKey();
                     e.secondNearestDistance = replacementSecond.utility();
-                    changed = true;
+                    metadataChanged = true;
                 } else if (e.secondNearestRepKey == removedRepKey) {
                     RepresentativeSet.UtilityScore replacementSecond = reps.bestExcluding(e.key, e.vector, e.nearestRepKey);
                     e.secondNearestRepKey = replacementSecond.nearestRepKey();
                     e.secondNearestDistance = replacementSecond.utility();
-                    changed = true;
+                    metadataChanged = true;
                 }
             }
 
             if (updatedRepKey >= 0L && (e.nearestRepKey == updatedRepKey || e.secondNearestRepKey == updatedRepKey)) {
                 refreshEntryFromScratch(e);
-                changed = true;
+                metadataChanged = true;
             }
 
             if (addedRepKey >= 0L && e.key != addedRepKey) {
@@ -302,24 +264,27 @@ public final class KCenterRetentionPolicy implements RetentionPolicy {
                         e.nearestRepKey = addedRepKey;
                         e.nearestDistance = d;
                         e.utility = computeStoreUtility(e.nearestRepKey, d);
-                        changed = true;
+                        metadataChanged = true;
                     } else if (addedRepKey != e.nearestRepKey && (!Double.isFinite(e.secondNearestDistance) || d < e.secondNearestDistance)) {
                         e.secondNearestRepKey = addedRepKey;
                         e.secondNearestDistance = d;
-                        changed = true;
+                        metadataChanged = true;
                     }
                 }
             }
 
             if (e.nearestRepKey < 0L || !Double.isFinite(e.nearestDistance)) {
                 refreshEntryFromScratch(e);
-                changed = true;
+                metadataChanged = true;
             }
 
-            if (changed) {
+            if (metadataChanged) {
                 e.representativeUtility = RepresentativeSet.computeRepresentativeUtility(e.nearestDistance, e.secondNearestDistance);
-                adjustTotalUtility(oldUtility, e.utility);
-                store.onEntryUpdated(e);
+                boolean utilityChanged = Double.compare(oldUtility, e.utility) != 0;
+                if (utilityChanged) {
+                    adjustTotalUtility(oldUtility, e.utility);
+                    store.onEntryUpdated(e);
+                }
             }
         }
     }

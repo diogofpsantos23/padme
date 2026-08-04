@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import padme.config.Config;
 import padme.data.CsvRowReader;
 import padme.data.RetainedDatasetWriter;
@@ -37,7 +38,6 @@ public final class Runner {
         assignDerivedOverlayParams(cfg);
 
         String mode = normalizeMode(cfg.mode);
-
         if (cfg.dataKeepRatios != null && !cfg.dataKeepRatios.isEmpty() &&
                 (mode.equals("padme")
                         || mode.equals("random")
@@ -53,7 +53,6 @@ public final class Runner {
         }
 
         cfg.validate();
-
         if (cfg.nodes > 1) runMultiNodeOnce(cfg, resolveOutDir(cfg, mode, null), null);
         else runSingleNodeOnce(cfg, resolveOutDir(cfg, mode, null));
     }
@@ -61,12 +60,11 @@ public final class Runner {
     private static void runSweep(Config base) {
         long totalRows = countInputRows(base.path, base.separator);
 
-        for (double r : base.dataKeepRatios) {
-            int ratioInt = toRatioInt(r);
-
+        for (double ratio : base.dataKeepRatios) {
+            int ratioInt = toRatioInt(ratio);
             Config cfg = cloneConfig(base);
-            cfg.keepRatio = r;
-            cfg.maxStoredItems = computePerNodeBudget(totalRows, r);
+            cfg.keepRatio = ratio;
+            cfg.maxStoredItems = computePerNodeBudget(totalRows, ratio);
 
             assignDerivedOverlayParams(cfg);
 
@@ -81,11 +79,11 @@ public final class Runner {
         }
     }
 
-    private static long countInputRows(String path, String sep) {
+    private static long countInputRows(String path, String separator) {
         long rows = 0;
-        try (CsvRowReader rdr = new CsvRowReader(path, sep, true)) {
-            rdr.header();
-            while (rdr.nextRow() != null) rows++;
+        try (CsvRowReader reader = new CsvRowReader(path, separator, true)) {
+            reader.header();
+            while (reader.nextRow() != null) rows++;
         } catch (Exception e) {
             throw new RuntimeException("Failed to count input rows for: " + path, e);
         }
@@ -93,21 +91,25 @@ public final class Runner {
     }
 
     private static void runSingleNodeOnce(Config cfg, Path outDir) {
-        Metrics m = new Metrics();
-        RetentionPolicy policy = createPolicy(cfg, m, 0);
-
+        Metrics metrics = new Metrics();
+        RetentionPolicy policy = createPolicy(cfg, metrics, 0);
         Node node0 = createNode(0, cfg, policy);
 
         long startNs = System.nanoTime();
 
         String[] header;
-        try (CsvRowReader rdr = new CsvRowReader(cfg.path, cfg.separator, true)) {
-            header = rdr.header();
+        try (CsvRowReader reader = new CsvRowReader(cfg.path, cfg.separator, true)) {
+            header = reader.header();
+            List<String[]> fitRows = loadRowsForVectorFit(cfg, 20_000);
+            VectorMapper mapper = NumericVectorMapper.fit(
+                    header,
+                    cfg.idColumn,
+                    cfg.ignoreColumns,
+                    fitRows,
+                    cfg.vectorTransform
+            );
 
-            List<String[]> fitRows = loadRowsForVectorFit(cfg, 20000);
-            VectorMapper mapper = NumericVectorMapper.fit(header, cfg.idColumn, cfg.ignoreColumns, fitRows, cfg.vectorTransform);
-
-            ingestLoopSingle(cfg, rdr, mapper, node0, m, policy, startNs);
+            ingestLoopSingle(cfg, reader, mapper, node0, metrics, policy, startNs);
         } catch (Exception e) {
             throw new RuntimeException("Ingest failed while reading: " + cfg.path, e);
         }
@@ -118,41 +120,56 @@ public final class Runner {
         System.out.println("DONE: " + cfg);
         System.out.printf(
                 "Final: seen=%d stored=%d admitted=%d dropped=%d evicted=%d utilitySum=%.1f mode=%s simTime=%.3fs%n",
-                m.seen, node0.storedCount(), m.admitted, m.dropped, m.evicted, node0.totalUtility(), normalizeMode(cfg.mode), elapsedSeconds
+                metrics.seen,
+                node0.storedCount(),
+                metrics.admitted,
+                metrics.dropped,
+                metrics.evicted,
+                node0.totalUtility(),
+                normalizeMode(cfg.mode),
+                elapsedSeconds
         );
 
         writeOutputsSingle(cfg, outDir, header, node0);
-        writeMetricsJson(cfg, outDir, m.totalBytesSent, elapsedNs, elapsedSeconds);
+        writeMetricsJson(cfg, outDir, metrics.totalBytesSent, elapsedSeconds, new Node[]{node0});
     }
 
     private static void runMultiNodeOnce(Config cfg, Path outDir, Integer ratioInt) {
-        int n = cfg.nodes;
+        int nodeCount = cfg.nodes;
 
-        Metrics[] ms = new Metrics[n];
-        Node[] nodes = new Node[n];
+        Metrics[] metrics = new Metrics[nodeCount];
+        Node[] nodes = new Node[nodeCount];
 
-        for (int i = 0; i < n; i++) {
-            ms[i] = new Metrics();
-            nodes[i] = createNode(i, cfg, createPolicy(cfg, ms[i], i));
+        for (int i = 0; i < nodeCount; i++) {
+            metrics[i] = new Metrics();
+            nodes[i] = createNode(i, cfg, createPolicy(cfg, metrics[i], i));
         }
 
         long seed = 1337L;
-        PssOverlay overlay = new PssOverlay(n, cfg.pssViewSize, cfg.pssShuffleLength, seed);
+        PssOverlay overlay = new PssOverlay(
+                nodeCount,
+                cfg.pssViewSize,
+                cfg.pssShuffleLength,
+                seed
+        );
 
         long startNs = System.nanoTime();
 
         String[] header;
         long rowsRead;
-        try (CsvRowReader rdr = new CsvRowReader(cfg.path, cfg.separator, true)) {
-            header = rdr.header();
+        try (CsvRowReader reader = new CsvRowReader(cfg.path, cfg.separator, true)) {
+            header = reader.header();
+            List<String[]> fitRows = loadRowsForVectorFit(cfg, 20_000);
+            VectorMapper mapper = NumericVectorMapper.fit(
+                    header,
+                    cfg.idColumn,
+                    cfg.ignoreColumns,
+                    fitRows,
+                    cfg.vectorTransform
+            );
 
-            List<String[]> fitRows = loadRowsForVectorFit(cfg, 20000);
-            VectorMapper mapper = NumericVectorMapper.fit(header, cfg.idColumn, cfg.ignoreColumns, fitRows, cfg.vectorTransform);
-
-            rowsRead = ingestLoopMulti(cfg, rdr, mapper, nodes, ms, overlay, startNs);
-
-            runBackgroundReplicationLoop(cfg, nodes, ms, overlay, startNs, rowsRead);
-
+            rowsRead = ingestLoopMulti(cfg, reader, mapper, nodes, metrics, overlay, startNs);
+            runBackgroundReplicationLoop(cfg, nodes, metrics, overlay, startNs, rowsRead);
         } catch (Exception e) {
             throw new RuntimeException("Ingest failed while reading: " + cfg.path, e);
         }
@@ -160,22 +177,24 @@ public final class Runner {
         long elapsedNs = System.nanoTime() - startNs;
         double elapsedSeconds = elapsedNs / 1_000_000_000.0;
 
-        printFinalMulti(cfg, nodes, ms);
-        printFinalPerNode(cfg, nodes, ms);
+        printFinalMulti(cfg, nodes, metrics);
+        printFinalPerNode(cfg, nodes, metrics);
 
         writeOutputsMulti(cfg, outDir, header, nodes);
-        writeMetricsJson(cfg, outDir, totalBytesSent(ms), elapsedNs, elapsedSeconds);
+        writeMetricsJson(cfg, outDir, totalBytesSent(metrics), elapsedSeconds, nodes);
 
-        if (ratioInt != null) System.out.println("Wrote outputs: " + outDir.toAbsolutePath());
+        if (ratioInt != null) {
+            System.out.println("Wrote outputs: " + outDir.toAbsolutePath());
+        }
     }
 
     private static List<String[]> loadRowsForVectorFit(Config cfg, int maxRows) throws IOException {
         List<String[]> rows = new ArrayList<>();
 
-        try (CsvRowReader rdr = new CsvRowReader(cfg.path, cfg.separator, true)) {
-            rdr.header();
+        try (CsvRowReader reader = new CsvRowReader(cfg.path, cfg.separator, true)) {
+            reader.header();
             String[] row;
-            while ((row = rdr.nextRow()) != null && rows.size() < maxRows) {
+            while ((row = reader.nextRow()) != null && rows.size() < maxRows) {
                 rows.add(row.clone());
             }
         }
@@ -183,64 +202,93 @@ public final class Runner {
         return rows;
     }
 
-    private static void ingestLoopSingle(Config cfg, CsvRowReader rdr, VectorMapper mapper, Node node, Metrics m, RetentionPolicy policy, long startNs) throws IOException {
+    private static void ingestLoopSingle(
+            Config cfg,
+            CsvRowReader reader,
+            VectorMapper mapper,
+            Node node,
+            Metrics metrics,
+            RetentionPolicy policy,
+            long startNs
+    ) throws IOException {
         String[] row;
         long rowIdx = 0;
 
-        while ((row = rdr.nextRow()) != null) {
+        while ((row = reader.nextRow()) != null) {
             long key = computeKey(cfg, row, rowIdx);
 
-            RetentionDecision d = ingestOne(node, mapper, cfg, key, row);
-            m.seen++;
-            m.record(d);
+            RetentionDecision decision = ingestOne(node, mapper, cfg, key, row);
+            metrics.seen++;
+            metrics.record(decision);
 
-            double uMinStore = 0.0;
-            int repsSize = 0;
-            double repsMinU = 0.0;
-            double repsMeanU = 0.0;
+            double minStoredUtility = 0.0;
+            int representativeCount = 0;
+            double minRepresentativeUtility = 0.0;
+            double meanRepresentativeUtility = 0.0;
 
-            if (policy instanceof GraphCutRetentionPolicy p) {
-                repsSize = p.representativeCount();
-                repsMinU = p.repsMinUtility();
-                repsMeanU = p.repsMeanUtility();
-                uMinStore = p.minUtilityStored();
-            } else if (policy instanceof KCenterRetentionPolicy p) {
-                repsSize = p.representativeCount();
-                repsMinU = p.repsMinUtility();
-                repsMeanU = p.repsMeanUtility();
-                uMinStore = p.minUtilityStored();
+            if (policy instanceof GraphCutRetentionPolicy graphCut) {
+                representativeCount = graphCut.representativeCount();
+                minRepresentativeUtility = graphCut.repsMinUtility();
+                meanRepresentativeUtility = graphCut.repsMeanUtility();
+                minStoredUtility = graphCut.minUtilityStored();
+            } else if (policy instanceof KCenterRetentionPolicy kCenter) {
+                representativeCount = kCenter.representativeCount();
+                minRepresentativeUtility = kCenter.repsMinUtility();
+                meanRepresentativeUtility = kCenter.repsMeanUtility();
+                minStoredUtility = kCenter.minUtilityStored();
             }
 
             long elapsedNs = System.nanoTime() - startNs;
-            m.maybePrint(cfg.reportEvery, node.storedCount(), node.storedBytes(), node.totalUtility(), elapsedNs, uMinStore, repsSize, repsMinU, repsMeanU);
+            metrics.maybePrint(
+                    cfg.reportEvery,
+                    node.storedCount(),
+                    node.storedBytes(),
+                    node.totalUtility(),
+                    elapsedNs,
+                    minStoredUtility,
+                    representativeCount,
+                    minRepresentativeUtility,
+                    meanRepresentativeUtility
+            );
 
             rowIdx++;
         }
     }
 
-    private static long ingestLoopMulti(Config cfg, CsvRowReader rdr, VectorMapper mapper, Node[] nodes, Metrics[] ms, PssOverlay overlay, long startNs) throws IOException {
-        int n = nodes.length;
+    private static long ingestLoopMulti(
+            Config cfg,
+            CsvRowReader reader,
+            VectorMapper mapper,
+            Node[] nodes,
+            Metrics[] metrics,
+            PssOverlay overlay,
+            long startNs
+    ) throws IOException {
+        int nodeCount = nodes.length;
 
         String[] row;
         long rowIdx = 0;
-
-        while ((row = rdr.nextRow()) != null) {
-            int owner = (int) (rowIdx % n);
+        while ((row = reader.nextRow()) != null) {
+            int owner = (int) (rowIdx % nodeCount);
             Node ownerNode = nodes[owner];
-            Metrics m = ms[owner];
+            Metrics ownerMetrics = metrics[owner];
 
             long key = computeKey(cfg, row, rowIdx);
-            RetentionDecision d = ingestOne(ownerNode, mapper, cfg, key, row);
+            RetentionDecision decision = ingestOne(ownerNode, mapper, cfg, key, row);
 
-            m.seen++;
-            m.record(d);
+            ownerMetrics.seen++;
+            ownerMetrics.record(decision);
 
-            if (shouldCycle(rowIdx, cfg.pssCycleEveryItems)) overlay.cycleAll();
-            if (shouldCycle(rowIdx, cfg.replCycleEveryItems)) replicationStep(nodes, overlay, cfg, ms);
+            if (shouldCycle(rowIdx, cfg.pssCycleEveryItems)) {
+                overlay.cycleAll();
+            }
+            if (shouldCycle(rowIdx, cfg.replCycleEveryItems)) {
+                replicationStep(nodes, overlay, cfg, metrics);
+            }
 
             if (shouldCycle(rowIdx, cfg.reportEvery)) {
                 long elapsedNs = System.nanoTime() - startNs;
-                printMultiProgress(cfg, nodes, ms, elapsedNs, rowIdx + 1);
+                printMultiProgress(cfg, nodes, metrics, elapsedNs, rowIdx + 1);
             }
 
             rowIdx++;
@@ -249,55 +297,61 @@ public final class Runner {
         return rowIdx;
     }
 
-    private static void runBackgroundReplicationLoop(Config cfg, Node[] nodes, Metrics[] ms, PssOverlay overlay, long startNs, long rowsRead) {
+    private static void runBackgroundReplicationLoop(
+            Config cfg,
+            Node[] nodes,
+            Metrics[] metrics,
+            PssOverlay overlay,
+            long startNs,
+            long rowsRead
+    ) {
         final long reportEveryMs = resolveReportEveryMs(cfg);
-
         long lastReportNs = System.nanoTime();
 
         while (totalReplQueueSize(nodes) > 0) {
             overlay.cycleAll();
-            replicationStep(nodes, overlay, cfg, ms);
+            replicationStep(nodes, overlay, cfg, metrics);
 
             long nowNs = System.nanoTime();
             if (nowNs - lastReportNs >= reportEveryMs * 1_000_000L) {
                 long elapsedNs = nowNs - startNs;
-                printMultiProgress(cfg, nodes, ms, elapsedNs, rowsRead);
+                printMultiProgress(cfg, nodes, metrics, elapsedNs, rowsRead);
                 System.out.flush();
                 lastReportNs = nowNs;
             }
 
             try {
                 Thread.sleep(1);
-            } catch (InterruptedException ie) {
+            } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 break;
             }
         }
 
         long elapsedNs = System.nanoTime() - startNs;
-        printMultiProgress(cfg, nodes, ms, elapsedNs, rowsRead);
+        printMultiProgress(cfg, nodes, metrics, elapsedNs, rowsRead);
     }
 
     private static int totalReplQueueSize(Node[] nodes) {
         int total = 0;
-        for (Node n : nodes) total += n.replicationQueueSize();
+        for (Node node : nodes) total += node.replicationQueueSize();
         return total;
     }
 
-    private static long totalBytesSent(Metrics[] ms) {
+    private static long totalBytesSent(Metrics[] metrics) {
         long total = 0L;
-        for (Metrics m : ms) total += m.totalBytesSent;
+        for (Metrics nodeMetrics : metrics) total += nodeMetrics.totalBytesSent;
         return total;
     }
 
     private static long resolveReportEveryMs(Config cfg) {
         if (cfg.reportEvery > 0) {
-            long ms = cfg.reportEvery;
-            if (ms < 250) ms = 250;
-            if (ms > 5000) ms = 5000;
-            return ms;
+            long milliseconds = cfg.reportEvery;
+            if (milliseconds < 250) milliseconds = 250;
+            if (milliseconds > 5_000) milliseconds = 5_000;
+            return milliseconds;
         }
-        return 1000;
+        return 1_000;
     }
 
     private static boolean shouldCycle(long rowIdx, Integer every) {
@@ -305,13 +359,12 @@ public final class Runner {
     }
 
     private static Node createNode(int id, Config cfg, RetentionPolicy policy) {
-        KvStore kv = new InMemoryKvStore();
-        return new Node(id, policy, kv, cfg.replTtl);
+        KvStore kvStore = new InMemoryKvStore();
+        return new Node(id, policy, kvStore, cfg.replTtl, cfg.replSeenCacheSize);
     }
 
-    private static RetentionPolicy createPolicy(Config cfg, Metrics m, int nodeId) {
+    private static RetentionPolicy createPolicy(Config cfg, Metrics metrics, int nodeId) {
         String mode = normalizeMode(cfg.mode);
-
         if (mode.equals("baseline")) {
             return new BaselineFullRetentionPolicy();
         }
@@ -322,47 +375,52 @@ public final class Runner {
         }
 
         int maxStored = cfg.maxStoredItems;
-        int maxReps = cfg.maxRepresentatives;
-
+        int maxRepresentatives = cfg.maxRepresentatives;
         if (maxStored <= 0) {
             throw new IllegalArgumentException("maxStoredItems must be > 0 for mode=" + mode);
         }
 
-        if (maxReps <= 0) {
+        if (maxRepresentatives <= 0) {
             throw new IllegalArgumentException("maxRepresentatives must be > 0 for mode=" + mode);
         }
 
-        if (maxReps >= maxStored) {
-            maxReps = Math.max(1, maxStored - 1);
+        if (maxRepresentatives >= maxStored) {
+            maxRepresentatives = Math.max(1, maxStored - 1);
         }
 
-        RepresentativeSet reps = new RepresentativeSet(maxReps, new L2Distance());
+        RepresentativeSet representatives = new RepresentativeSet(maxRepresentatives, new L2Distance());
         int refreshEveryItems = cfg.refreshUtilitySpan;
 
         if (mode.equals("graph_cut")) {
             return new GraphCutRetentionPolicy(
                     maxStored,
-                    reps,
+                    representatives,
                     refreshEveryItems,
                     2.0,
                     cfg.nonRepSampleFactor,
-                    m
+                    metrics
             );
         }
 
         if (mode.equals("k_center")) {
             return new KCenterRetentionPolicy(
                     maxStored,
-                    reps,
+                    representatives,
                     refreshEveryItems,
-                    m
+                    metrics
             );
         }
 
         throw new IllegalArgumentException("Unsupported mode: " + cfg.mode);
     }
 
-    private static RetentionDecision ingestOne(Node node, VectorMapper mapper, Config cfg, long key, String[] row) {
+    private static RetentionDecision ingestOne(
+            Node node,
+            VectorMapper mapper,
+            Config cfg,
+            long key,
+            String[] row
+    ) {
         DataItem item = new DataItem(row.clone());
         float[] vector = mapper.map(row, cfg.idColumn);
         return node.onLocalItem(key, item, vector);
@@ -373,114 +431,164 @@ public final class Runner {
         return parseKey(row[cfg.idColumn], fallback);
     }
 
-    private static long parseKey(String s, long fallback) {
+    private static long parseKey(String value, long fallback) {
         try {
-            String t = (s == null) ? "" : s.trim();
-            if (t.isEmpty()) return fallback;
-            return Long.parseLong(t);
+            String trimmed = (value == null) ? "" : value.trim();
+            if (trimmed.isEmpty()) return fallback;
+            return Long.parseLong(trimmed);
         } catch (Exception ignored) {
             return fallback;
         }
     }
 
-    private static void printMultiProgress(Config cfg, Node[] nodes, Metrics[] ms, long elapsedNs, long rowsRead) {
+    private static void printMultiProgress(
+            Config cfg,
+            Node[] nodes,
+            Metrics[] metrics,
+            long elapsedNs,
+            long rowsRead
+    ) {
         int storedTotal = 0;
         long bytesTotal = 0L;
         double utilityTotal = 0.0;
 
-        for (Node nd : nodes) {
-            storedTotal += nd.storedCount();
-            bytesTotal += nd.storedBytes();
-            utilityTotal += nd.totalUtility();
+        for (Node node : nodes) {
+            storedTotal += node.storedCount();
+            bytesTotal += node.storedBytes();
+            utilityTotal += node.totalUtility();
         }
 
         System.out.printf(
                 "Progress: rows=%d storedTotal=%d bytesTotal=%d utilityTotal=%.1f replQ=%d elapsed=%.2fs nodes=%d mode=%s%n%n",
-                rowsRead, storedTotal, bytesTotal, utilityTotal, totalReplQueueSize(nodes), elapsedNs / 1e9, nodes.length, normalizeMode(cfg.mode)
+                rowsRead,
+                storedTotal,
+                bytesTotal,
+                utilityTotal,
+                totalReplQueueSize(nodes),
+                elapsedNs / 1e9,
+                nodes.length,
+                normalizeMode(cfg.mode)
         );
 
-        printPerNodeProgress(nodes, ms, elapsedNs);
+        printPerNodeProgress(nodes, metrics, elapsedNs);
     }
 
-    private static void printFinalMulti(Config cfg, Node[] nodes, Metrics[] ms) {
+    private static void printFinalMulti(Config cfg, Node[] nodes, Metrics[] metrics) {
         long seen = 0;
         long admitted = 0;
         long dropped = 0;
         long evicted = 0;
         int stored = 0;
-        double util = 0.0;
+        double utility = 0.0;
 
         for (int i = 0; i < nodes.length; i++) {
-            Metrics m = ms[i];
-            seen += m.seen;
-            admitted += m.admitted;
-            dropped += m.dropped;
-            evicted += m.evicted;
+            Metrics nodeMetrics = metrics[i];
+            seen += nodeMetrics.seen;
+            admitted += nodeMetrics.admitted;
+            dropped += nodeMetrics.dropped;
+            evicted += nodeMetrics.evicted;
             stored += nodes[i].storedCount();
-            util += nodes[i].totalUtility();
+            utility += nodes[i].totalUtility();
         }
+
+        StorageSummary storage = summarizeStorage(cfg, nodes);
 
         System.out.println("DONE: " + cfg);
         System.out.printf(
-                "Final (multi): seen=%d storedTotal=%d admitted=%d dropped=%d evicted=%d utilitySum=%.1f nodes=%d mode=%s%n",
-                seen, stored, admitted, dropped, evicted, util, nodes.length, normalizeMode(cfg.mode)
+                "Final (multi): seen=%d storedTotal=%d admitted=%d dropped=%d evicted=%d utilitySum=%.1f nodes=%d mode=%s " +
+                        "storedPerNode[min=%d mean=%.2f max=%d] underfilledNodes=%d%n",
+                seen,
+                stored,
+                admitted,
+                dropped,
+                evicted,
+                utility,
+                nodes.length,
+                normalizeMode(cfg.mode),
+                storage.minStored,
+                storage.meanStored,
+                storage.maxStored,
+                storage.underfilledNodes
         );
-    }
 
-    private static void printFinalPerNode(Config cfg, Node[] nodes, Metrics[] ms) {
-        System.out.println("Final per node:");
-        for (int i = 0; i < nodes.length; i++) {
-            Node nd = nodes[i];
-            Metrics m = ms[i];
+        if (storage.underfilledNodes > 0) {
             System.out.printf(
-                    "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f replQ=%d mode=%s%n",
-                    i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), nd.replicationQueueSize(), normalizeMode(cfg.mode)
+                    "WARNING: %d/%d nodes finished below the configured retention budget. " +
+                            "This is an expected possible outcome of finite push-gossip without repair.%n",
+                    storage.underfilledNodes,
+                    nodes.length
             );
         }
     }
 
-    private static void replicationStep(Node[] nodes, PssOverlay overlay, Config cfg, Metrics[] ms) {
-        int n = nodes.length;
-        int fanout = Math.max(1, Math.min(cfg.replFanout, Math.max(1, n - 1)));
+    private static void printFinalPerNode(Config cfg, Node[] nodes, Metrics[] metrics) {
+        System.out.println("Final per node:");
+        for (int i = 0; i < nodes.length; i++) {
+            Node node = nodes[i];
+            Metrics nodeMetrics = metrics[i];
+            System.out.printf(
+                    "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f replQ=%d mode=%s%n",
+                    i,
+                    nodeMetrics.seen,
+                    nodeMetrics.admitted,
+                    nodeMetrics.dropped,
+                    nodeMetrics.evicted,
+                    node.storedCount(),
+                    node.storedBytes(),
+                    node.totalUtility(),
+                    node.replicationQueueSize(),
+                    normalizeMode(cfg.mode)
+            );
+        }
+    }
+
+    private static void replicationStep(
+            Node[] nodes,
+            PssOverlay overlay,
+            Config cfg,
+            Metrics[] metrics
+    ) {
+        int nodeCount = nodes.length;
+        int fanout = Math.max(1, Math.min(cfg.replFanout, Math.max(1, nodeCount - 1)));
         int batchSize = Math.max(1, cfg.replBatchSize);
 
-        for (int i = 0; i < n; i++) {
-            List<Node.QueuedRecord> batch = nodes[i].drainReplicationBatch(batchSize);
+        for (int senderId = 0; senderId < nodeCount; senderId++) {
+            List<Node.QueuedRecord> batch = nodes[senderId].drainReplicationBatch(batchSize);
             if (batch.isEmpty()) continue;
 
-            int[] peers = overlay.samplePeers(i, fanout);
-            for (int p : peers) {
-                if (p < 0 || p >= n || p == i) continue;
+            for (Node.QueuedRecord queued : batch) {
+                int[] peers = overlay.samplePeers(senderId, fanout);
+                for (int receiverId : peers) {
+                    if (receiverId < 0 || receiverId >= nodeCount || receiverId == senderId) continue;
 
-                Metrics receiverMetrics = ms[p];
-                for (Node.QueuedRecord qr : batch) {
-                    Record r = qr.record;
-                    ms[i].totalBytesSent += computeRecordPayloadBytes(r);
+                    Record record = queued.record;
+                    metrics[senderId].totalBytesSent += computeRecordPayloadBytes(record);
 
-                    RetentionDecision d = nodes[p].onRemoteRecord(r, qr.ttlRemaining);
-                    receiverMetrics.seen++;
-                    receiverMetrics.record(d);
+                    RetentionDecision decision = nodes[receiverId].onRemoteRecord(
+                            record,
+                            queued.ttlRemaining
+                    );
+                    metrics[receiverId].seen++;
+                    metrics[receiverId].record(decision);
                 }
             }
         }
     }
 
-    private static long computeRecordPayloadBytes(Record r) {
-        if (r == null) return 0L;
+    private static long computeRecordPayloadBytes(Record record) {
+        if (record == null) return 0L;
 
-        long bytes = 0L;
+        long bytes = Long.BYTES;
 
-        bytes += Long.BYTES;
-
-        if (r.meta != null) {
+        if (record.meta != null) {
             bytes += Long.BYTES;
             bytes += Double.BYTES;
         }
 
-        if (r.item != null && r.item.fields != null) {
-            for (String s : r.item.fields) {
-                if (s != null) {
-                    bytes += s.getBytes(StandardCharsets.UTF_8).length;
+        if (record.item != null && record.item.fields != null) {
+            for (String field : record.item.fields) {
+                if (field != null) {
+                    bytes += field.getBytes(StandardCharsets.UTF_8).length;
                 }
             }
         }
@@ -514,22 +622,43 @@ public final class Runner {
         }
     }
 
-    private static void writeMetricsJson(Config cfg, Path outDir, long totalBytesSent, long simulationTimeNs, double simulationTimeSeconds) {
+    private static void writeMetricsJson(
+            Config cfg,
+            Path outDir,
+            long totalBytesSent,
+            double simulationTimeSeconds,
+            Node[] nodes
+    ) {
         try {
             java.nio.file.Files.createDirectories(outDir);
 
-            ObjectMapper om = new ObjectMapper();
-
+            ObjectMapper mapper = new ObjectMapper();
             Map<String, Object> root = new LinkedHashMap<>();
+            StorageSummary storage = summarizeStorage(cfg, nodes);
+
             root.put("dataset", resolveDatasetKey(cfg));
             root.put("mode", normalizeMode(cfg.mode));
-            if (!normalizeMode(cfg.mode).equals("baseline")) root.put("keepRatio", cfg.keepRatio);
+            if (!normalizeMode(cfg.mode).equals("baseline")) {
+                root.put("keepRatio", cfg.keepRatio);
+            }
             root.put("nodes", cfg.nodes);
+            root.put("pssViewSize", cfg.pssViewSize);
+            root.put("pssShuffleLength", cfg.pssShuffleLength);
+            root.put("replFanout", cfg.replFanout);
+            root.put("replTtl", cfg.replTtl);
+            root.put("replSeenCacheSize", cfg.replSeenCacheSize);
             root.put("totalBytesSent", totalBytesSent);
             root.put("simulationTimeSeconds", simulationTimeSeconds);
+            root.put("minStoredItemsPerNode", storage.minStored);
+            root.put("meanStoredItemsPerNode", storage.meanStored);
+            root.put("maxStoredItemsPerNode", storage.maxStored);
+            root.put("underfilledNodes", storage.underfilledNodes);
+            if (cfg.maxStoredItems != null) {
+                root.put("targetStoredItemsPerNode", cfg.maxStoredItems);
+            }
 
             Path out = outDir.resolve("metrics.json");
-            om.writerWithDefaultPrettyPrinter().writeValue(out.toFile(), root);
+            mapper.writerWithDefaultPrettyPrinter().writeValue(out.toFile(), root);
 
             System.out.println("Wrote metrics JSON: " + out.toAbsolutePath());
         } catch (Exception e) {
@@ -537,15 +666,57 @@ public final class Runner {
         }
     }
 
-    private static void printPerNodeProgress(Node[] nodes, Metrics[] ms, long elapsedNs) {
+    private static void printPerNodeProgress(Node[] nodes, Metrics[] metrics, long elapsedNs) {
         for (int i = 0; i < nodes.length; i++) {
-            Node nd = nodes[i];
-            Metrics m = ms[i];
+            Node node = nodes[i];
+            Metrics nodeMetrics = metrics[i];
             System.out.printf(
                     "N%d seen=%d admitted=%d dropped=%d evicted=%d stored=%d bytes=%d utility=%.1f replQ=%d elapsed=%.2fs%n",
-                    i, m.seen, m.admitted, m.dropped, m.evicted, nd.storedCount(), nd.storedBytes(), nd.totalUtility(), nd.replicationQueueSize(), elapsedNs / 1e9
+                    i,
+                    nodeMetrics.seen,
+                    nodeMetrics.admitted,
+                    nodeMetrics.dropped,
+                    nodeMetrics.evicted,
+                    node.storedCount(),
+                    node.storedBytes(),
+                    node.totalUtility(),
+                    node.replicationQueueSize(),
+                    elapsedNs / 1e9
             );
         }
+    }
+
+    private static StorageSummary summarizeStorage(Config cfg, Node[] nodes) {
+        if (nodes == null || nodes.length == 0) {
+            return new StorageSummary(0, 0.0, 0, 0);
+        }
+
+        int minStored = Integer.MAX_VALUE;
+        int maxStored = Integer.MIN_VALUE;
+        long totalStored = 0L;
+        int underfilledNodes = 0;
+
+        boolean hasTarget = !normalizeMode(cfg.mode).equals("baseline")
+                && cfg.maxStoredItems != null
+                && cfg.maxStoredItems > 0;
+
+        for (Node node : nodes) {
+            int stored = node.storedCount();
+            minStored = Math.min(minStored, stored);
+            maxStored = Math.max(maxStored, stored);
+            totalStored += stored;
+
+            if (hasTarget && stored < cfg.maxStoredItems) {
+                underfilledNodes++;
+            }
+        }
+
+        return new StorageSummary(
+                minStored,
+                (double) totalStored / nodes.length,
+                maxStored,
+                underfilledNodes
+        );
     }
 
     private static int toRatioInt(double ratio) {
@@ -559,8 +730,8 @@ public final class Runner {
     }
 
     private static Path resolveOutDir(Config cfg, String mode, Integer ratioInt) {
-        String m = normalizeMode(mode);
-        Path base = resolveDatasetOutRoot(cfg).resolve(m);
+        String normalizedMode = normalizeMode(mode);
+        Path base = resolveDatasetOutRoot(cfg).resolve(normalizedMode);
         if (ratioInt == null) return base;
         return base.resolve(Integer.toString(ratioInt));
     }
@@ -591,7 +762,9 @@ public final class Runner {
             if (cfg.maxRepresentatives == null || cfg.maxRepresentatives <= 0) {
                 int derived = (int) Math.floor(Math.sqrt(cfg.maxStoredItems));
                 derived = Math.max(1, derived);
-                if (derived >= cfg.maxStoredItems) derived = Math.max(1, cfg.maxStoredItems - 1);
+                if (derived >= cfg.maxStoredItems) {
+                    derived = Math.max(1, cfg.maxStoredItems - 1);
+                }
                 cfg.maxRepresentatives = derived;
             }
 
@@ -602,90 +775,93 @@ public final class Runner {
     }
 
     private static void assignDerivedOverlayParams(Config cfg) {
-        int n = Math.max(1, cfg.nodes);
-        int maxPeers = Math.max(1, n - 1);
-        int logN = ceilLog2(n);
+        int nodeCount = Math.max(1, cfg.nodes);
+        int maxPeers = Math.max(1, nodeCount - 1);
+        int logN = ceilLog2(nodeCount);
 
         if (cfg.pssViewSize == null || cfg.pssViewSize <= 0) {
-            int derivedView = Math.max(4, (int) Math.ceil(Math.sqrt(n) * logN));
-            cfg.pssViewSize = Math.min(maxPeers, derivedView);
+            int derivedViewSize = Math.max(4, 2 * logN);
+            cfg.pssViewSize = Math.min(maxPeers, derivedViewSize);
         } else {
             cfg.pssViewSize = Math.min(cfg.pssViewSize, maxPeers);
         }
 
         if (cfg.pssShuffleLength == null || cfg.pssShuffleLength <= 0) {
-            cfg.pssShuffleLength = cfg.pssViewSize;
+            int derivedShuffleLength = Math.max(2, logN);
+            cfg.pssShuffleLength = Math.min(cfg.pssViewSize, derivedShuffleLength);
         } else {
             cfg.pssShuffleLength = Math.min(cfg.pssShuffleLength, cfg.pssViewSize);
         }
 
         if (cfg.replFanout == null || cfg.replFanout <= 0) {
-            int derivedFanout = Math.max(2, (int) Math.ceil(Math.sqrt(n) * Math.sqrt(logN)));
-            cfg.replFanout = Math.min(maxPeers, derivedFanout);
+            cfg.replFanout = Math.min(maxPeers, 2);
         } else {
             cfg.replFanout = Math.min(cfg.replFanout, maxPeers);
         }
+
+        if (cfg.replTtl == null || cfg.replTtl <= 0) {
+            cfg.replTtl = logN;
+        }
     }
 
-    private static int ceilLog2(int x) {
-        if (x <= 1) return 1;
-        int v = x - 1;
+    private static int ceilLog2(int value) {
+        if (value <= 1) return 1;
+
+        int remaining = value - 1;
         int log = 0;
-        while (v > 0) {
-            v >>= 1;
+        while (remaining > 0) {
+            remaining >>= 1;
             log++;
         }
         return log;
     }
 
     private static Config cloneConfig(Config src) {
-        Config c = new Config();
-        c.path = src.path;
-        c.separator = src.separator;
-        c.idColumn = src.idColumn;
+        Config clone = new Config();
+        clone.path = src.path;
+        clone.separator = src.separator;
+        clone.idColumn = src.idColumn;
 
-        c.mode = src.mode;
-        c.nodes = src.nodes;
+        clone.mode = src.mode;
+        clone.nodes = src.nodes;
+        clone.pssViewSize = src.pssViewSize;
+        clone.pssShuffleLength = src.pssShuffleLength;
+        clone.pssCycleEveryItems = src.pssCycleEveryItems;
 
-        c.pssViewSize = src.pssViewSize;
-        c.pssShuffleLength = src.pssShuffleLength;
-        c.pssCycleEveryItems = src.pssCycleEveryItems;
+        clone.replFanout = src.replFanout;
+        clone.replBatchSize = src.replBatchSize;
+        clone.replCycleEveryItems = src.replCycleEveryItems;
+        clone.replTtl = src.replTtl;
+        clone.replSeenCacheSize = src.replSeenCacheSize;
 
-        c.replFanout = src.replFanout;
-        c.replBatchSize = src.replBatchSize;
-        c.replCycleEveryItems = src.replCycleEveryItems;
-        c.replTtl = src.replTtl;
+        clone.dataKeepRatios = src.dataKeepRatios;
+        clone.keepRatio = src.keepRatio;
+        clone.maxStoredItems = src.maxStoredItems;
+        clone.maxRepresentatives = src.maxRepresentatives;
+        clone.refreshUtilitySpan = src.refreshUtilitySpan;
+        clone.nonRepSampleFactor = src.nonRepSampleFactor;
 
-        c.dataKeepRatios = src.dataKeepRatios;
-        c.keepRatio = src.keepRatio;
+        clone.padmeBinBalanceGamma = src.padmeBinBalanceGamma;
+        clone.padmeBinBalanceMax = src.padmeBinBalanceMax;
+        clone.padmeBinBalanceMin = src.padmeBinBalanceMin;
 
-        c.maxStoredItems = src.maxStoredItems;
-        c.maxRepresentatives = src.maxRepresentatives;
-        c.refreshUtilitySpan = src.refreshUtilitySpan;
-        c.nonRepSampleFactor = src.nonRepSampleFactor;
+        clone.reportEvery = src.reportEvery;
+        clone.ignoreColumns = src.ignoreColumns;
+        clone.vectorTransform = src.vectorTransform;
 
-        c.padmeBinBalanceGamma = src.padmeBinBalanceGamma;
-        c.padmeBinBalanceMax = src.padmeBinBalanceMax;
-        c.padmeBinBalanceMin = src.padmeBinBalanceMin;
-
-        c.reportEvery = src.reportEvery;
-
-        c.ignoreColumns = src.ignoreColumns;
-        c.vectorTransform = src.vectorTransform;
-
-        return c;
+        return clone;
     }
 
     private static String normalizeMode(String mode) {
         if (mode == null || mode.isBlank()) return "padme";
 
-        String m = mode.trim().toLowerCase();
-        return switch (m) {
+        String normalized = mode.trim().toLowerCase();
+        return switch (normalized) {
             case "graphcut", "graph_cut" -> "graph_cut";
             case "maxdiversity", "max_diversity" -> "max_diversity";
             case "kcenter", "k_center" -> "k_center";
-            case "baseline", "random", "padme" -> m;
-            default -> m;
+            case "baseline", "random", "padme" -> normalized;
+            default -> normalized;
         };
     }
 
@@ -694,5 +870,19 @@ public final class Runner {
                 || mode.equals("graph_cut")
                 || mode.equals("max_diversity")
                 || mode.equals("k_center");
+    }
+
+    private static final class StorageSummary {
+        private final int minStored;
+        private final double meanStored;
+        private final int maxStored;
+        private final int underfilledNodes;
+
+        private StorageSummary(int minStored, double meanStored, int maxStored, int underfilledNodes) {
+            this.minStored = minStored;
+            this.meanStored = meanStored;
+            this.maxStored = maxStored;
+            this.underfilledNodes = underfilledNodes;
+        }
     }
 }

@@ -6,6 +6,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class RepresentativeSet {
+  public static final double DEFAULT_ALPHA = 0.25;
+
   public record UtilityScore(long nearestRepKey, double utility) {
   }
 
@@ -47,30 +49,49 @@ public final class RepresentativeSet {
   private static final class Rep {
     final long key;
     final float[] v;
+    long nearestRepKey;
+    double nearestDistance;
+    long secondNearestRepKey;
+    double secondNearestDistance;
     double utility;
 
-    Rep(long key, float[] v, double utility) {
+    Rep(long key, float[] v) {
       this.key = key;
       this.v = v;
-      this.utility = utility;
+      this.nearestRepKey = -1L;
+      this.nearestDistance = Double.POSITIVE_INFINITY;
+      this.secondNearestRepKey = -1L;
+      this.secondNearestDistance = Double.POSITIVE_INFINITY;
+      this.utility = Double.POSITIVE_INFINITY;
     }
   }
 
   private final int maxRepresentatives;
   private final Distance distance;
+  private final double alpha;
   private final List<Rep> reps = new ArrayList<>();
+  private boolean utilitiesCurrent = true;
 
   public RepresentativeSet(int maxRepresentatives, Distance distance) {
+    this(maxRepresentatives, distance, DEFAULT_ALPHA);
+  }
+
+  public RepresentativeSet(int maxRepresentatives, Distance distance, double alpha) {
     this.maxRepresentatives = Math.max(0, maxRepresentatives);
     this.distance = distance;
+    this.alpha = Math.max(0.0, alpha);
   }
 
   public static double computeRepresentativeUtility(double nearestDistance, double secondNearestDistance) {
+    return computeRepresentativeUtility(nearestDistance, secondNearestDistance, DEFAULT_ALPHA);
+  }
+
+  public static double computeRepresentativeUtility(double nearestDistance, double secondNearestDistance, double alpha) {
     if (!Double.isFinite(nearestDistance)) {
       return Double.POSITIVE_INFINITY;
     }
 
-    double base = Math.log1p(Math.max(0.5, nearestDistance));
+    double base = Math.log1p(Math.max(0.0, nearestDistance));
 
     if (!Double.isFinite(secondNearestDistance) || secondNearestDistance <= 0.0) {
       return base;
@@ -79,8 +100,7 @@ public final class RepresentativeSet {
     double ratio = nearestDistance / secondNearestDistance;
     if (ratio < 0.0) ratio = 0.0;
     if (ratio > 1.0) ratio = 1.0;
-
-    return base * (1.0 + 10 * ratio);
+    return base * (1.0 + Math.max(0.0, alpha) * ratio);
   }
 
   public int size() {
@@ -107,7 +127,6 @@ public final class RepresentativeSet {
 
     double best = Double.POSITIVE_INFINITY;
     long bestKey = -1L;
-
     double second = Double.POSITIVE_INFINITY;
     long secondKey = -1L;
 
@@ -116,7 +135,6 @@ public final class RepresentativeSet {
 
       double d = distance.between(x, r.v);
       if (!Double.isFinite(d)) continue;
-
       if (d < best) {
         second = best;
         secondKey = bestKey;
@@ -152,7 +170,6 @@ public final class RepresentativeSet {
     if (bestKey < 0L) {
       return new UtilityScore(-1L, Double.POSITIVE_INFINITY);
     }
-
     return new UtilityScore(bestKey, best);
   }
 
@@ -177,22 +194,23 @@ public final class RepresentativeSet {
     if (maxRepresentatives <= 0) return Change.none();
 
     float[] copy = x.clone();
-    double newU = Double.isFinite(repUtilityOfX) ? repUtilityOfX : 0.0;
-
+    double candidateUtility = Double.isFinite(repUtilityOfX) ? repUtilityOfX : 0.0;
     int existingIdx = indexOfKey(key);
+
     if (existingIdx >= 0) {
-      reps.set(existingIdx, new Rep(key, copy, newU));
+      replaceRepresentative(existingIdx, new Rep(key, copy));
       return Change.updated(key);
     }
 
     int n = reps.size();
     if (n == 0) {
-      reps.add(new Rep(key, copy, Double.POSITIVE_INFINITY));
+      reps.add(new Rep(key, copy));
+      utilitiesCurrent = true;
       return Change.added(key);
     }
 
     if (n < maxRepresentatives) {
-      reps.add(new Rep(key, copy, newU));
+      addRepresentative(new Rep(key, copy));
       return Change.added(key);
     }
 
@@ -207,13 +225,129 @@ public final class RepresentativeSet {
       }
     }
 
-    if (newU > worstU) {
+    if (candidateUtility > worstU) {
       long removedKey = reps.get(worstIdx).key;
-      reps.set(worstIdx, new Rep(key, copy, newU));
+      replaceRepresentative(worstIdx, new Rep(key, copy));
       return Change.replaced(key, removedKey);
     }
 
     return Change.none();
+  }
+
+  private void addRepresentative(Rep added) {
+    int existingCount = reps.size();
+    reps.add(added);
+
+    for (int i = 0; i < existingCount; i++) {
+      Rep existing = reps.get(i);
+      double d = distance.between(existing.v, added.v);
+      if (!Double.isFinite(d)) continue;
+
+      insertNeighbor(existing, added.key, d);
+      insertNeighbor(added, existing.key, d);
+    }
+
+    refreshUtility(added);
+    utilitiesCurrent = true;
+  }
+
+  private void replaceRepresentative(int index, Rep replacement) {
+    Rep removed = reps.get(index);
+    long removedKey = removed.key;
+    reps.set(index, replacement);
+
+    int n = reps.size();
+    for (int i = 0; i < n; i++) {
+      Rep current = reps.get(i);
+      if (current.key == replacement.key) continue;
+
+      boolean dependedOnRemoved = current.nearestRepKey == removedKey || current.secondNearestRepKey == removedKey;
+      if (dependedOnRemoved) {
+        recomputeNeighbors(current);
+      } else {
+        double d = distance.between(current.v, replacement.v);
+        if (Double.isFinite(d)) {
+          insertNeighbor(current, replacement.key, d);
+        }
+      }
+    }
+
+    recomputeNeighbors(replacement);
+    utilitiesCurrent = true;
+  }
+
+  private void insertNeighbor(Rep target, long candidateKey, double candidateDistance) {
+    if (target.key == candidateKey || !Double.isFinite(candidateDistance)) return;
+
+    if (target.nearestRepKey == candidateKey) {
+      target.nearestDistance = candidateDistance;
+      normalizeNeighbors(target);
+      refreshUtility(target);
+      return;
+    }
+
+    if (target.secondNearestRepKey == candidateKey) {
+      target.secondNearestDistance = candidateDistance;
+      normalizeNeighbors(target);
+      refreshUtility(target);
+      return;
+    }
+
+    if (!Double.isFinite(target.nearestDistance) || candidateDistance < target.nearestDistance) {
+      target.secondNearestRepKey = target.nearestRepKey;
+      target.secondNearestDistance = target.nearestDistance;
+      target.nearestRepKey = candidateKey;
+      target.nearestDistance = candidateDistance;
+      refreshUtility(target);
+      return;
+    }
+
+    if (!Double.isFinite(target.secondNearestDistance) || candidateDistance < target.secondNearestDistance) {
+      target.secondNearestRepKey = candidateKey;
+      target.secondNearestDistance = candidateDistance;
+      refreshUtility(target);
+    }
+  }
+
+  private void normalizeNeighbors(Rep rep) {
+    if (rep.secondNearestDistance < rep.nearestDistance) {
+      long key = rep.nearestRepKey;
+      double d = rep.nearestDistance;
+      rep.nearestRepKey = rep.secondNearestRepKey;
+      rep.nearestDistance = rep.secondNearestDistance;
+      rep.secondNearestRepKey = key;
+      rep.secondNearestDistance = d;
+    }
+  }
+
+  private void recomputeNeighbors(Rep target) {
+    target.nearestRepKey = -1L;
+    target.nearestDistance = Double.POSITIVE_INFINITY;
+    target.secondNearestRepKey = -1L;
+    target.secondNearestDistance = Double.POSITIVE_INFINITY;
+
+    for (Rep candidate : reps) {
+      if (candidate.key == target.key) continue;
+
+      double d = distance.between(target.v, candidate.v);
+      if (!Double.isFinite(d)) continue;
+
+      if (d < target.nearestDistance) {
+        target.secondNearestRepKey = target.nearestRepKey;
+        target.secondNearestDistance = target.nearestDistance;
+        target.nearestRepKey = candidate.key;
+        target.nearestDistance = d;
+      } else if (d < target.secondNearestDistance) {
+        target.secondNearestRepKey = candidate.key;
+        target.secondNearestDistance = d;
+      }
+    }
+
+    refreshUtility(target);
+  }
+
+  private void refreshUtility(Rep rep) {
+    rep.utility = computeRepresentativeUtility(rep.nearestDistance, rep.secondNearestDistance, alpha);
   }
 
   private int indexOfKey(long key) {
@@ -228,36 +362,16 @@ public final class RepresentativeSet {
   }
 
   public void refreshUtilities() {
-    int n = reps.size();
-    if (n == 0) return;
-
-    if (n == 1) {
-      reps.getFirst().utility = Double.POSITIVE_INFINITY;
-      return;
+    if (!utilitiesCurrent) {
+      rebuildUtilities();
     }
+  }
 
-    for (int i = 0; i < n; i++) {
-      Rep ri = reps.get(i);
-
-      double best = Double.POSITIVE_INFINITY;
-      double second = Double.POSITIVE_INFINITY;
-
-      for (int j = 0; j < n; j++) {
-        if (i == j) continue;
-
-        double d = distance.between(ri.v, reps.get(j).v);
-        if (!Double.isFinite(d)) continue;
-
-        if (d < best) {
-          second = best;
-          best = d;
-        } else if (d < second) {
-          second = d;
-        }
-      }
-
-      ri.utility = computeRepresentativeUtility(best, second);
+  public void rebuildUtilities() {
+    for (Rep rep : reps) {
+      recomputeNeighbors(rep);
     }
+    utilitiesCurrent = true;
   }
 
   public double minUtility() {

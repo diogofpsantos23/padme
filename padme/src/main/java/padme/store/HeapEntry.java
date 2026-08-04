@@ -13,6 +13,9 @@ public final class HeapEntry {
   public double secondNearestDistance;
   public long secondNearestRepKey;
 
+  public double graphCutCoverageSum;
+  public double graphCutRedundancySum;
+
   public boolean representative;
   public int heapIndex = -1;
 
@@ -29,6 +32,8 @@ public final class HeapEntry {
     this.nearestRepKey = nearestRepKey;
     this.secondNearestDistance = secondNearestDistance;
     this.secondNearestRepKey = secondNearestRepKey;
+    this.graphCutCoverageSum = 0.0;
+    this.graphCutRedundancySum = 0.0;
     this.representative = representative;
   }
 }

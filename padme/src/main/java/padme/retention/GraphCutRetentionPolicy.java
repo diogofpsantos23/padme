@@ -7,29 +7,57 @@ import padme.store.ItemStore;
 
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 public final class GraphCutRetentionPolicy implements RetentionPolicy {
     private static final int BOOTSTRAP_REPRESENTATIVES = 1;
     private static final double STORE_ADMISSION_SLACK = 1.00;
     private static final double REP_PROMOTION_SLACK = 1.10;
+    private static final double NUMERIC_EPSILON = 1.0e-12;
+
+    private record ItemVector(long key, float[] vector) {
+    }
+
+    private record GraphCutComponents(double coverage, double redundancy) {
+    }
+
+    private static final class SampleDelta {
+        private final Map<Long, ItemVector> added = new LinkedHashMap<>();
+        private final Map<Long, ItemVector> removed = new LinkedHashMap<>();
+
+        void recordAdded(ItemVector item) {
+            ItemVector cancelledRemoval = removed.remove(item.key());
+            if (cancelledRemoval == null) {
+                added.put(item.key(), item);
+            }
+        }
+
+        void recordRemoved(ItemVector item) {
+            ItemVector cancelledAddition = added.remove(item.key());
+            if (cancelledAddition == null) {
+                removed.put(item.key(), item);
+            }
+        }
+
+        boolean isEmpty() {
+            return added.isEmpty() && removed.isEmpty();
+        }
+    }
 
     private final ItemStore store;
     private final RepresentativeSet reps;
     private final Metrics metrics;
-    private final int refreshEveryItems;
     private final double lambda;
     private final int nonRepSampleFactor;
+    private final ArrayList<ItemVector> sampledNonRepresentatives = new ArrayList<>();
 
     private long admittedSinceStart = 0;
     private double totalUtility = 0.0;
 
-    private final ArrayList<Long> sampledNonRepKeys = new ArrayList<>();
-
     public GraphCutRetentionPolicy(int maxStoredItems, RepresentativeSet reps, int refreshEveryItems, double lambda, int nonRepSampleFactor, Metrics metrics) {
         this.reps = reps;
-        this.refreshEveryItems = refreshEveryItems;
         this.lambda = lambda;
         this.nonRepSampleFactor = Math.max(1, nonRepSampleFactor);
         this.metrics = metrics;
@@ -46,43 +74,57 @@ public final class GraphCutRetentionPolicy implements RetentionPolicy {
             return RetentionDecision.dropped();
         }
 
+        HeapEntry existing = store.get(key);
+        if (existing != null) {
+            if (metrics != null) {
+                metrics.winRecordSeen(existing.utility);
+                metrics.winRecordDropped(existing.utility);
+            }
+            return RetentionDecision.droppedDuplicate();
+        }
+
         RepresentativeSet.NeighborScore score;
-        double storeU;
-        double repU;
+        double storeUtility;
+        double representativeUtility;
+        GraphCutComponents components;
 
         if (reps.isEmpty()) {
             score = new RepresentativeSet.NeighborScore(-1L, Double.POSITIVE_INFINITY, -1L, Double.POSITIVE_INFINITY);
-            storeU = Double.POSITIVE_INFINITY;
-            repU = Double.POSITIVE_INFINITY;
+            components = new GraphCutComponents(0.0, 0.0);
+            storeUtility = Double.POSITIVE_INFINITY;
+            representativeUtility = Double.POSITIVE_INFINITY;
         } else {
             score = reps.scoreWithSecond(key, vector);
-            storeU = computeStoreUtility(key, vector);
-            repU = RepresentativeSet.computeRepresentativeUtility(score.nearestUtility(), score.secondNearestUtility());
+            components = computeGraphCutComponents(key, vector);
+            storeUtility = utilityFromComponents(components.coverage(), components.redundancy());
+            representativeUtility = RepresentativeSet.computeRepresentativeUtility(score.nearestUtility(), score.secondNearestUtility());
 
-            if (!Double.isFinite(storeU)) {
+            if (!Double.isFinite(storeUtility)) {
                 if (metrics != null) {
-                    metrics.winRecordSeen(storeU);
-                    metrics.winRecordDropped(storeU);
+                    metrics.winRecordSeen(storeUtility);
+                    metrics.winRecordDropped(storeUtility);
                 }
                 return RetentionDecision.dropped();
             }
         }
 
         if (metrics != null) {
-            metrics.winRecordSeen(storeU);
+            metrics.winRecordSeen(storeUtility);
         }
 
         HeapEntry incoming = new HeapEntry(
                 key,
                 vector,
-                storeU,
-                repU,
+                storeUtility,
+                representativeUtility,
                 score.nearestUtility(),
                 score.nearestRepKey(),
                 score.secondNearestUtility(),
                 score.secondNearestRepKey(),
                 false
         );
+        incoming.graphCutCoverageSum = components.coverage();
+        incoming.graphCutRedundancySum = components.redundancy();
 
         if (store.size() < store.capacity()) {
             return admitWithFreeCapacity(incoming);
@@ -91,387 +133,451 @@ public final class GraphCutRetentionPolicy implements RetentionPolicy {
         return admitAtCapacity(incoming);
     }
 
-    private double computeStoreUtility(long itemKey, float[] vector) {
-        if (reps.isEmpty()) {
-            return Double.POSITIVE_INFINITY;
-        }
-
-        ensureSampleConsistency();
-
+    private GraphCutComponents computeGraphCutComponents(long itemKey, float[] vector) {
         double coverage = 0.0;
-        for (HeapEntry rep : store.representativeEntries()) {
-            if (rep.key == itemKey) continue;
-
-            double d = reps.distanceToRep(rep.key, vector);
-            if (!Double.isFinite(d)) continue;
-
-            coverage += similarityFromDistance(d);
+        for (HeapEntry representative : store.representativeEntries()) {
+            if (representative.key == itemKey) continue;
+            coverage += similarity(vector, representative.vector);
         }
 
         double redundancy = 0.0;
-        for (long sampledKey : sampledNonRepKeys) {
-            if (sampledKey == itemKey) continue;
-
-            HeapEntry e = store.get(sampledKey);
-            if (e == null || e.representative) continue;
-
-            double d = distanceBetween(vector, e.vector);
-            if (!Double.isFinite(d)) continue;
-
-            redundancy += similarityFromDistance(d);
+        for (ItemVector sampled : sampledNonRepresentatives) {
+            if (sampled.key() == itemKey) continue;
+            redundancy += similarity(vector, sampled.vector());
         }
 
+        return new GraphCutComponents(coverage, redundancy);
+    }
+
+    private double utilityFromComponents(double coverage, double redundancy) {
         return (lambda * coverage) - (2.0 * redundancy);
     }
 
-    private double similarityFromDistance(double d) {
-        return 1.0 / (1.0 + Math.max(0.0, d));
-    }
-
-    private double distanceBetween(float[] a, float[] b) {
-        return reps.distanceBetween(a, b);
+    private double similarity(float[] a, float[] b) {
+        if (a == null || b == null) return 0.0;
+        double distance = reps.distanceBetween(a, b);
+        if (!Double.isFinite(distance)) return 0.0;
+        return 1.0 / (1.0 + Math.max(0.0, distance));
     }
 
     private boolean shouldPromoteToRepresentative(HeapEntry incoming) {
         if (store.isRepresentative(incoming.key)) {
             return true;
         }
-
         if (!reps.isFull() && reps.size() < Math.min(BOOTSTRAP_REPRESENTATIVES, store.capacity())) {
             return true;
         }
-
         if (reps.isEmpty()) {
             return true;
         }
-
         return incoming.representativeUtility > (reps.minUtility() * REP_PROMOTION_SLACK);
     }
 
-    private void refreshRepresentatives(RepresentativeSet.Change repChange) {
-        if (repChange.membershipChanged || repChange.updatedRepKey >= 0L) {
-            reps.refreshUtilities();
-            return;
-        }
-
-        if (refreshEveryItems > 0 && (admittedSinceStart % refreshEveryItems == 0)) {
-            reps.refreshUtilities();
-        }
-    }
-
     private RetentionDecision admitWithFreeCapacity(HeapEntry incoming) {
-        boolean becameRep = false;
         RepresentativeSet.Change repChange = RepresentativeSet.Change.none();
+        boolean becameRepresentative = false;
 
         if (shouldPromoteToRepresentative(incoming)) {
             repChange = reps.maybeUpdate(incoming.key, incoming.vector, incoming.representativeUtility);
-            becameRep = repChange.changed && (repChange.addedRepKey == incoming.key || repChange.updatedRepKey == incoming.key);
+            becameRepresentative = repChange.changed
+                    && (repChange.addedRepKey == incoming.key || repChange.updatedRepKey == incoming.key);
         }
 
-        if (becameRep) {
+        if (becameRepresentative) {
+            HeapEntry removedRepresentative = repChange.removedRepKey >= 0L ? store.get(repChange.removedRepKey) : null;
+            float[] removedRepresentativeVector = removedRepresentative == null ? null : removedRepresentative.vector;
+
             incoming.representative = true;
             store.addRepresentative(incoming);
             addToTotalUtility(incoming.utility);
 
-            if (repChange.removedRepKey >= 0L) {
-                store.markNonRepresentative(repChange.removedRepKey);
-                HeapEntry demoted = store.get(repChange.removedRepKey);
-                if (demoted != null) {
-                    double oldUtility = demoted.utility;
-                    refreshEntryFromScratch(demoted);
-                    adjustTotalUtility(oldUtility, demoted.utility);
-                    store.onEntryUpdated(demoted);
-                    onNonRepresentativeAddedToSample(demoted.key);
-                }
+            HeapEntry demoted = demoteRepresentative(repChange.removedRepKey);
+            boolean utilitiesChanged = applyRepresentativeChange(
+                    repChange,
+                    removedRepresentativeVector,
+                    null,
+                    incoming.vector,
+                    demoted
+            );
+
+            SampleDelta sampleDelta = new SampleDelta();
+            if (demoted != null) {
+                considerForSample(demoted, sampleDelta);
+            }
+            reconcileSample(sampleDelta);
+            utilitiesChanged |= applySampleDelta(sampleDelta);
+
+            if (utilitiesChanged) {
+                store.rebuildHeap();
             }
         } else {
             store.addNonRepresentative(incoming);
             addToTotalUtility(incoming.utility);
-            onNonRepresentativeAddedToSample(incoming.key);
-        }
 
-        admittedSinceStart++;
-        applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey);
-        refreshRepresentatives(repChange);
-        ensureSampleConsistency();
-
-        if (metrics != null) {
-            metrics.winRecordAdmitted(incoming.utility);
-            if (repChange.membershipChanged) {
-                metrics.winRecordRepReplaced();
+            SampleDelta sampleDelta = new SampleDelta();
+            considerForSample(incoming, sampleDelta);
+            reconcileSample(sampleDelta);
+            if (applySampleDelta(sampleDelta)) {
+                store.rebuildHeap();
             }
         }
 
+        admittedSinceStart++;
+        recordAdmissionMetrics(incoming, repChange, null);
         return RetentionDecision.admitted(incoming);
     }
 
     private RetentionDecision admitAtCapacity(HeapEntry incoming) {
-        double worstNonRepU = store.minNonRepresentativeUtility();
-        boolean canEvictNonRep = hasEvictableNonRepresentative();
-        boolean shouldBecomeRep = shouldPromoteToRepresentative(incoming);
+        double worstNonRepresentativeUtility = store.minNonRepresentativeUtility();
+        boolean canEvictNonRepresentative = store.hasNonRepresentative();
+        boolean shouldBecomeRepresentative = shouldPromoteToRepresentative(incoming);
 
-        if (!shouldBecomeRep) {
-            if (!canEvictNonRep || incoming.utility <= (worstNonRepU * STORE_ADMISSION_SLACK)) {
-                if (metrics != null) {
-                    metrics.winRecordDropped(incoming.utility);
-                }
+        if (!shouldBecomeRepresentative) {
+            if (!canEvictNonRepresentative || incoming.utility <= (worstNonRepresentativeUtility * STORE_ADMISSION_SLACK)) {
+                recordDrop(incoming.utility);
                 return RetentionDecision.dropped();
             }
-
-            HeapEntry out = store.evictWorstNonRepresentative();
-            if (out != null) {
-                removeFromTotalUtility(out.utility);
-                onNonRepresentativeRemovedFromSample(out.key);
-            }
-
-            store.addNonRepresentative(incoming);
-            addToTotalUtility(incoming.utility);
-            onNonRepresentativeAddedToSample(incoming.key);
-
-            if (metrics != null) {
-                metrics.winRecordEvicted();
-                metrics.winRecordAdmitted(incoming.utility);
-            }
-
-            admittedSinceStart++;
-            ensureSampleConsistency();
-            return RetentionDecision.evictedAndAdmitted(out, incoming);
+            return replaceWorstNonRepresentative(incoming);
         }
 
-        if (!canEvictNonRep) {
-            if (metrics != null) {
-                metrics.winRecordDropped(incoming.utility);
-            }
+        if (!canEvictNonRepresentative && !store.isRepresentative(incoming.key)) {
+            recordDrop(incoming.utility);
             return RetentionDecision.dropped();
         }
 
         RepresentativeSet.Change repChange = reps.maybeUpdate(incoming.key, incoming.vector, incoming.representativeUtility);
-        boolean becameRep = repChange.changed && (repChange.addedRepKey == incoming.key || repChange.updatedRepKey == incoming.key);
+        boolean becameRepresentative = repChange.changed
+                && (repChange.addedRepKey == incoming.key || repChange.updatedRepKey == incoming.key);
 
-        if (!becameRep) {
-            if (incoming.utility <= (worstNonRepU * STORE_ADMISSION_SLACK)) {
-                if (metrics != null) {
-                    metrics.winRecordDropped(incoming.utility);
-                }
+        if (!becameRepresentative) {
+            if (incoming.utility <= (worstNonRepresentativeUtility * STORE_ADMISSION_SLACK)) {
+                recordDrop(incoming.utility);
                 return RetentionDecision.dropped();
             }
-
-            HeapEntry out = store.evictWorstNonRepresentative();
-            if (out != null) {
-                removeFromTotalUtility(out.utility);
-                onNonRepresentativeRemovedFromSample(out.key);
-            }
-
-            store.addNonRepresentative(incoming);
-            addToTotalUtility(incoming.utility);
-            onNonRepresentativeAddedToSample(incoming.key);
-
-            if (metrics != null) {
-                metrics.winRecordEvicted();
-                metrics.winRecordAdmitted(incoming.utility);
-            }
-
-            admittedSinceStart++;
-            ensureSampleConsistency();
-            return RetentionDecision.evictedAndAdmitted(out, incoming);
+            return replaceWorstNonRepresentative(incoming);
         }
+
+        HeapEntry removedRepresentative = repChange.removedRepKey >= 0L ? store.get(repChange.removedRepKey) : null;
+        float[] removedRepresentativeVector = removedRepresentative == null ? null : removedRepresentative.vector;
 
         incoming.representative = true;
         store.addRepresentative(incoming);
         addToTotalUtility(incoming.utility);
 
-        long demotedRepKey = repChange.removedRepKey;
-        if (demotedRepKey >= 0L) {
-            store.markNonRepresentative(demotedRepKey);
-            HeapEntry demoted = store.get(demotedRepKey);
-            if (demoted != null) {
-                double oldUtility = demoted.utility;
-                refreshEntryFromScratch(demoted);
-                adjustTotalUtility(oldUtility, demoted.utility);
-                store.onEntryUpdated(demoted);
-                onNonRepresentativeAddedToSample(demoted.key);
-            }
+        HeapEntry demoted = demoteRepresentative(repChange.removedRepKey);
+        boolean utilitiesChanged = applyRepresentativeChange(
+                repChange,
+                removedRepresentativeVector,
+                null,
+                incoming.vector,
+                demoted
+        );
+
+        SampleDelta firstSampleDelta = new SampleDelta();
+        if (demoted != null) {
+            considerForSample(demoted, firstSampleDelta);
+        }
+        reconcileSample(firstSampleDelta);
+        utilitiesChanged |= applySampleDelta(firstSampleDelta);
+
+        if (utilitiesChanged) {
+            store.rebuildHeap();
         }
 
-        HeapEntry out = store.evictWorstNonRepresentativeExcept(demotedRepKey);
-        if (out == null) {
-            out = store.evictWorstNonRepresentative();
-        }
-        if (out != null) {
-            removeFromTotalUtility(out.utility);
-            onNonRepresentativeRemovedFromSample(out.key);
+        HeapEntry evicted = null;
+        if (store.size() > store.capacity()) {
+            evicted = store.evictWorstNonRepresentativeExcept(repChange.removedRepKey);
+            if (evicted == null) {
+                evicted = store.evictWorstNonRepresentative();
+            }
+
+            if (evicted != null) {
+                removeFromTotalUtility(evicted.utility);
+
+                SampleDelta evictionSampleDelta = new SampleDelta();
+                removeFromSample(evicted.key, evictionSampleDelta);
+                reconcileSample(evictionSampleDelta);
+                if (applySampleDelta(evictionSampleDelta)) {
+                    store.rebuildHeap();
+                }
+            }
         }
 
         admittedSinceStart++;
-        applyRepChanges(repChange.removedRepKey, repChange.addedRepKey, repChange.updatedRepKey);
-        refreshRepresentatives(repChange);
-        ensureSampleConsistency();
+        recordAdmissionMetrics(incoming, repChange, evicted);
 
-        if (metrics != null) {
-            if (out != null) {
-                metrics.winRecordEvicted();
-            }
-            metrics.winRecordAdmitted(incoming.utility);
-            if (repChange.membershipChanged) {
-                metrics.winRecordRepReplaced();
-            }
-        }
-
-        if (out == null) {
+        if (evicted == null) {
             return RetentionDecision.admitted(incoming);
         }
-        return RetentionDecision.evictedAndAdmitted(out, incoming);
+        return RetentionDecision.evictedAndAdmitted(evicted, incoming);
     }
 
-    private boolean hasEvictableNonRepresentative() {
-        return store.hasNonRepresentative();
+    private RetentionDecision replaceWorstNonRepresentative(HeapEntry incoming) {
+        HeapEntry evicted = store.evictWorstNonRepresentative();
+        if (evicted != null) {
+            removeFromTotalUtility(evicted.utility);
+        }
+
+        store.addNonRepresentative(incoming);
+        addToTotalUtility(incoming.utility);
+
+        SampleDelta sampleDelta = new SampleDelta();
+        if (evicted != null) {
+            removeFromSample(evicted.key, sampleDelta);
+        }
+        considerForSample(incoming, sampleDelta);
+        reconcileSample(sampleDelta);
+
+        if (applySampleDelta(sampleDelta)) {
+            store.rebuildHeap();
+        }
+
+        admittedSinceStart++;
+        recordAdmissionMetrics(incoming, RepresentativeSet.Change.none(), evicted);
+        return RetentionDecision.evictedAndAdmitted(evicted, incoming);
     }
 
-    private void applyRepChanges(long removedRepKey, long addedRepKey, long updatedRepKey) {
-        if (store.size() == 0) return;
-        if (removedRepKey < 0L && addedRepKey < 0L && updatedRepKey < 0L) return;
+    private HeapEntry demoteRepresentative(long representativeKey) {
+        if (representativeKey < 0L) return null;
 
-        for (HeapEntry e : store.nonRepresentativeEntries()) {
-            double oldUtility = e.utility;
-            boolean changed = false;
+        store.markNonRepresentative(representativeKey);
+        return store.get(representativeKey);
+    }
 
-            if (removedRepKey >= 0L) {
-                if (e.nearestRepKey == removedRepKey) {
-                    e.nearestRepKey = e.secondNearestRepKey;
-                    e.nearestDistance = e.secondNearestDistance;
+    private boolean applyRepresentativeChange(RepresentativeSet.Change change, float[] removedRepresentativeVector, float[] previousUpdatedVector, float[] newRepresentativeVector, HeapEntry demoted) {
+        if (!change.changed) return false;
 
-                    RepresentativeSet.UtilityScore replacementSecond = reps.bestExcluding(e.key, e.vector, e.nearestRepKey);
-                    e.secondNearestRepKey = replacementSecond.nearestRepKey();
-                    e.secondNearestDistance = replacementSecond.utility();
-                    changed = true;
-                } else if (e.secondNearestRepKey == removedRepKey) {
-                    RepresentativeSet.UtilityScore replacementSecond = reps.bestExcluding(e.key, e.vector, e.nearestRepKey);
-                    e.secondNearestRepKey = replacementSecond.nearestRepKey();
-                    e.secondNearestDistance = replacementSecond.utility();
-                    changed = true;
+        boolean changedAnyUtility = false;
+
+        for (HeapEntry entry : store.nonRepresentativeEntries()) {
+            if (demoted != null && entry.key == demoted.key) continue;
+
+            double oldUtility = entry.utility;
+
+            if (change.removedRepKey >= 0L && removedRepresentativeVector != null) {
+                entry.graphCutCoverageSum -= similarity(entry.vector, removedRepresentativeVector);
+            }
+            if (change.addedRepKey >= 0L) {
+                entry.graphCutCoverageSum += similarity(entry.vector, newRepresentativeVector);
+            }
+            if (change.updatedRepKey >= 0L) {
+                if (previousUpdatedVector != null) {
+                    entry.graphCutCoverageSum -= similarity(entry.vector, previousUpdatedVector);
                 }
+                entry.graphCutCoverageSum += similarity(entry.vector, newRepresentativeVector);
             }
 
-            if (updatedRepKey >= 0L && (e.nearestRepKey == updatedRepKey || e.secondNearestRepKey == updatedRepKey)) {
-                refreshEntryFromScratch(e);
-                changed = true;
-            }
+            entry.graphCutCoverageSum = normalizeAccumulatedValue(entry.graphCutCoverageSum);
+            updateNeighborMetadata(entry, change);
+            entry.utility = utilityFromComponents(entry.graphCutCoverageSum, entry.graphCutRedundancySum);
+            adjustTotalUtility(oldUtility, entry.utility);
+            changedAnyUtility |= Double.compare(oldUtility, entry.utility) != 0;
+        }
 
-            if (addedRepKey >= 0L && e.key != addedRepKey) {
-                double d = reps.distanceToRep(addedRepKey, e.vector);
-                if (Double.isFinite(d)) {
-                    if (!Double.isFinite(e.nearestDistance) || d < e.nearestDistance) {
-                        e.secondNearestRepKey = e.nearestRepKey;
-                        e.secondNearestDistance = e.nearestDistance;
-                        e.nearestRepKey = addedRepKey;
-                        e.nearestDistance = d;
-                        changed = true;
-                    } else if (addedRepKey != e.nearestRepKey && (!Double.isFinite(e.secondNearestDistance) || d < e.secondNearestDistance)) {
-                        e.secondNearestRepKey = addedRepKey;
-                        e.secondNearestDistance = d;
-                        changed = true;
-                    }
-                }
-            }
+        if (demoted != null) {
+            double oldUtility = demoted.utility;
+            refreshNeighborMetadataFromScratch(demoted);
+            initializeGraphCutComponents(demoted);
+            adjustTotalUtility(oldUtility, demoted.utility);
+            changedAnyUtility = true;
+        }
 
-            if (e.nearestRepKey < 0L || !Double.isFinite(e.nearestDistance)) {
-                refreshEntryFromScratch(e);
-                changed = true;
-            }
+        return changedAnyUtility;
+    }
 
-            if (changed) {
-                e.utility = computeStoreUtility(e.key, e.vector);
-                e.representativeUtility = RepresentativeSet.computeRepresentativeUtility(e.nearestDistance, e.secondNearestDistance);
-                adjustTotalUtility(oldUtility, e.utility);
-                store.onEntryUpdated(e);
+    private void updateNeighborMetadata(HeapEntry entry, RepresentativeSet.Change change) {
+        if (change.updatedRepKey >= 0L) {
+            refreshNeighborMetadataFromScratch(entry);
+            return;
+        }
+
+        boolean metadataChanged = false;
+
+        if (change.removedRepKey >= 0L) {
+            if (entry.nearestRepKey == change.removedRepKey) {
+                entry.nearestRepKey = entry.secondNearestRepKey;
+                entry.nearestDistance = entry.secondNearestDistance;
+                RepresentativeSet.UtilityScore replacementSecond = reps.bestExcluding(entry.key, entry.vector, entry.nearestRepKey);
+                entry.secondNearestRepKey = replacementSecond.nearestRepKey();
+                entry.secondNearestDistance = replacementSecond.utility();
+                metadataChanged = true;
+            } else if (entry.secondNearestRepKey == change.removedRepKey) {
+                RepresentativeSet.UtilityScore replacementSecond = reps.bestExcluding(entry.key, entry.vector, entry.nearestRepKey);
+                entry.secondNearestRepKey = replacementSecond.nearestRepKey();
+                entry.secondNearestDistance = replacementSecond.utility();
+                metadataChanged = true;
             }
         }
 
-        ensureSampleConsistency();
+        if (change.addedRepKey >= 0L && entry.key != change.addedRepKey) {
+            double distance = reps.distanceToRep(change.addedRepKey, entry.vector);
+            if (Double.isFinite(distance)) {
+                if (!Double.isFinite(entry.nearestDistance) || distance < entry.nearestDistance) {
+                    entry.secondNearestRepKey = entry.nearestRepKey;
+                    entry.secondNearestDistance = entry.nearestDistance;
+                    entry.nearestRepKey = change.addedRepKey;
+                    entry.nearestDistance = distance;
+                    metadataChanged = true;
+                } else if (change.addedRepKey != entry.nearestRepKey
+                        && (!Double.isFinite(entry.secondNearestDistance) || distance < entry.secondNearestDistance)) {
+                    entry.secondNearestRepKey = change.addedRepKey;
+                    entry.secondNearestDistance = distance;
+                    metadataChanged = true;
+                }
+            }
+        }
+
+        if (entry.nearestRepKey < 0L || !Double.isFinite(entry.nearestDistance)) {
+            refreshNeighborMetadataFromScratch(entry);
+            return;
+        }
+
+        if (metadataChanged) {
+            entry.representativeUtility = RepresentativeSet.computeRepresentativeUtility(entry.nearestDistance, entry.secondNearestDistance);
+        }
     }
 
-    private void refreshEntryFromScratch(HeapEntry e) {
-        RepresentativeSet.NeighborScore s = reps.scoreWithSecond(e.key, e.vector);
-        e.nearestDistance = s.nearestUtility();
-        e.nearestRepKey = s.nearestRepKey();
-        e.secondNearestDistance = s.secondNearestUtility();
-        e.secondNearestRepKey = s.secondNearestRepKey();
-        e.utility = computeStoreUtility(e.key, e.vector);
-        e.representativeUtility = RepresentativeSet.computeRepresentativeUtility(s.nearestUtility(), s.secondNearestUtility());
+    private void refreshNeighborMetadataFromScratch(HeapEntry entry) {
+        RepresentativeSet.NeighborScore score = reps.scoreWithSecond(entry.key, entry.vector);
+        entry.nearestDistance = score.nearestUtility();
+        entry.nearestRepKey = score.nearestRepKey();
+        entry.secondNearestDistance = score.secondNearestUtility();
+        entry.secondNearestRepKey = score.secondNearestRepKey();
+        entry.representativeUtility = RepresentativeSet.computeRepresentativeUtility(score.nearestUtility(), score.secondNearestUtility());
+    }
+
+    private void initializeGraphCutComponents(HeapEntry entry) {
+        GraphCutComponents components = computeGraphCutComponents(entry.key, entry.vector);
+        entry.graphCutCoverageSum = components.coverage();
+        entry.graphCutRedundancySum = components.redundancy();
+        entry.utility = utilityFromComponents(components.coverage(), components.redundancy());
     }
 
     private int targetSampleSize() {
         return Math.max(1, nonRepSampleFactor * Math.max(1, reps.size()));
     }
 
-    private void onNonRepresentativeAddedToSample(long key) {
-        HeapEntry e = store.get(key);
-        if (e == null || e.representative) {
-            return;
-        }
-
-        if (sampleContains(key)) {
-            return;
-        }
+    private void considerForSample(HeapEntry entry, SampleDelta delta) {
+        if (entry == null || entry.representative || sampleContains(entry.key)) return;
 
         int target = targetSampleSize();
-        if (sampledNonRepKeys.size() < target) {
-            sampledNonRepKeys.add(key);
+        ItemVector candidate = new ItemVector(entry.key, entry.vector);
+
+        if (sampledNonRepresentatives.size() < target) {
+            sampledNonRepresentatives.add(candidate);
+            delta.recordAdded(candidate);
             return;
         }
 
-        int nonRepCount = Math.max(1, store.size() - reps.size());
-        int draw = ThreadLocalRandom.current().nextInt(nonRepCount);
+        int nonRepresentativeCount = Math.max(1, store.size() - reps.size());
+        int draw = ThreadLocalRandom.current().nextInt(nonRepresentativeCount);
         if (draw < target) {
-            int replaceIdx = ThreadLocalRandom.current().nextInt(target);
-            sampledNonRepKeys.set(replaceIdx, key);
+            int replaceIndex = ThreadLocalRandom.current().nextInt(target);
+            ItemVector removed = sampledNonRepresentatives.set(replaceIndex, candidate);
+            delta.recordRemoved(removed);
+            delta.recordAdded(candidate);
         }
     }
 
-    private void onNonRepresentativeRemovedFromSample(long key) {
-        for (int i = 0; i < sampledNonRepKeys.size(); i++) {
-            if (sampledNonRepKeys.get(i) == key) {
-                sampledNonRepKeys.remove(i);
-                break;
+    private void removeFromSample(long key, SampleDelta delta) {
+        for (int i = 0; i < sampledNonRepresentatives.size(); i++) {
+            ItemVector sampled = sampledNonRepresentatives.get(i);
+            if (sampled.key() == key) {
+                sampledNonRepresentatives.remove(i);
+                delta.recordRemoved(sampled);
+                return;
             }
         }
     }
 
     private boolean sampleContains(long key) {
-        for (long sampledKey : sampledNonRepKeys) {
-            if (sampledKey == key) return true;
+        for (ItemVector sampled : sampledNonRepresentatives) {
+            if (sampled.key() == key) return true;
         }
         return false;
     }
 
-    private void ensureSampleConsistency() {
-        if (sampledNonRepKeys.isEmpty() && !store.hasNonRepresentative()) {
-            return;
-        }
-
+    private void reconcileSample(SampleDelta delta) {
         HashSet<Long> seen = new HashSet<>();
-        Iterator<Long> it = sampledNonRepKeys.iterator();
-        while (it.hasNext()) {
-            long key = it.next();
-            HeapEntry e = store.get(key);
-            if (e == null || e.representative || !seen.add(key)) {
-                it.remove();
+
+        for (int i = 0; i < sampledNonRepresentatives.size();) {
+            ItemVector sampled = sampledNonRepresentatives.get(i);
+            HeapEntry stored = store.get(sampled.key());
+            if (stored == null || stored.representative || !seen.add(sampled.key())) {
+                sampledNonRepresentatives.remove(i);
+                delta.recordRemoved(sampled);
+            } else {
+                i++;
             }
         }
 
         int target = targetSampleSize();
-        if (sampledNonRepKeys.size() >= target) {
-            while (sampledNonRepKeys.size() > target) {
-                sampledNonRepKeys.remove(sampledNonRepKeys.size() - 1);
-            }
-            return;
+        while (sampledNonRepresentatives.size() > target) {
+            ItemVector removed = sampledNonRepresentatives.remove(sampledNonRepresentatives.size() - 1);
+            delta.recordRemoved(removed);
+            seen.remove(removed.key());
         }
 
-        for (HeapEntry e : store.nonRepresentativeEntries()) {
-            if (sampledNonRepKeys.size() >= target) break;
-            if (seen.add(e.key)) {
-                sampledNonRepKeys.add(e.key);
+        if (sampledNonRepresentatives.size() >= target) return;
+
+        for (HeapEntry entry : store.nonRepresentativeEntries()) {
+            if (sampledNonRepresentatives.size() >= target) break;
+            if (seen.add(entry.key)) {
+                ItemVector added = new ItemVector(entry.key, entry.vector);
+                sampledNonRepresentatives.add(added);
+                delta.recordAdded(added);
             }
+        }
+    }
+
+    private boolean applySampleDelta(SampleDelta delta) {
+        if (delta.isEmpty()) return false;
+
+        boolean changedAnyUtility = false;
+
+        for (HeapEntry entry : store.nonRepresentativeEntries()) {
+            double oldUtility = entry.utility;
+
+            for (ItemVector removed : delta.removed.values()) {
+                if (entry.key != removed.key()) {
+                    entry.graphCutRedundancySum -= similarity(entry.vector, removed.vector());
+                }
+            }
+            for (ItemVector added : delta.added.values()) {
+                if (entry.key != added.key()) {
+                    entry.graphCutRedundancySum += similarity(entry.vector, added.vector());
+                }
+            }
+
+            entry.graphCutRedundancySum = normalizeAccumulatedValue(entry.graphCutRedundancySum);
+            entry.utility = utilityFromComponents(entry.graphCutCoverageSum, entry.graphCutRedundancySum);
+            adjustTotalUtility(oldUtility, entry.utility);
+            changedAnyUtility |= Double.compare(oldUtility, entry.utility) != 0;
+        }
+
+        return changedAnyUtility;
+    }
+
+    private double normalizeAccumulatedValue(double value) {
+        if (Math.abs(value) < NUMERIC_EPSILON) return 0.0;
+        return value;
+    }
+
+    private void recordDrop(double utility) {
+        if (metrics != null) {
+            metrics.winRecordDropped(utility);
+        }
+    }
+
+    private void recordAdmissionMetrics(HeapEntry incoming, RepresentativeSet.Change repChange, HeapEntry evicted) {
+        if (metrics == null) return;
+
+        if (evicted != null) {
+            metrics.winRecordEvicted();
+        }
+        metrics.winRecordAdmitted(incoming.utility);
+        if (repChange.membershipChanged) {
+            metrics.winRecordRepReplaced();
         }
     }
 
